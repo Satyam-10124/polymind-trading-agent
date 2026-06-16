@@ -8,7 +8,7 @@ from whale.monitor import (
     get_leaderboard, filter_whales, scan_new_whale_trades, compute_consensus,
 )
 from whale.profiler import build_profile, get_size_multiplier
-from brain.committee import run_committee, run_post_mortem
+from brain.committee import run_committee, run_post_mortem, derive_event_key, _resolve_day
 from risk.tp_sl_manager import check_position, compute_pnl, get_current_price
 from executor.clob_client import place_order, sell_position, get_wallet_balance
 from db.models import (
@@ -189,6 +189,8 @@ def whale_scan_job():
             "reasoning":    verdict.get("reasoning"),
             "category":     market.get("category", "other"),
             "consensus_score": consensus.get("consensus_score", 0),
+            "resolve_date": _resolve_day(market),
+            "event_key":    derive_event_key(question, market.get("category", "other")),
         }
         save_position(pos)
         save_committee_report(pos_id, question, verdict)

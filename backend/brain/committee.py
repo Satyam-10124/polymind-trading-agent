@@ -27,6 +27,113 @@ from brain.prompts import (
 
 logger = logging.getLogger(__name__)
 
+import re
+
+STOPWORDS = {
+    "will", "the", "a", "an", "to", "of", "in", "on", "by", "be", "is", "are",
+    "and", "or", "for", "at", "this", "that", "before", "after", "than", "with",
+    "does", "do", "have", "has", "any", "more", "less", "between", "during",
+    "market", "yes", "no", "what", "when", "who", "how", "reach", "above", "below",
+}
+
+
+def derive_event_key(question: str, category: str = "other") -> str:
+    """
+    Cheap heuristic to group markets that share an underlying event.
+    Two markets about "Trump 2024 election" should collide even if worded
+    differently. We take the most salient content tokens.
+    """
+    q = (question or "").lower()
+    tokens = re.findall(r"[a-z0-9]+", q)
+    salient = [t for t in tokens if t not in STOPWORDS and len(t) > 2]
+    key_tokens = sorted(salient[:5])
+    return f"{category}:{'_'.join(key_tokens)}" if key_tokens else category
+
+
+def portfolio_hard_checks(trade: dict, market: dict, open_positions: list) -> dict:
+    """
+    Deterministic, non-LLM portfolio guardrails. Returns:
+      {reject: bool, reason: str, dedup_count: int, yes_pct: float,
+       same_day_count: int, correlated: bool}
+
+    Rules:
+      1. Event clustering — reject if >MAX_SAME_DAY_RESOLUTIONS open positions
+         (incl. this one) resolve on the same calendar day.
+      2. Directional concentration — reject if >MAX_YES_CONCENTRATION of open
+         positions would be YES after adding this trade.
+      3. Correlated markets — if this trade shares an event_key with an existing
+         open position, the pair counts as ONE position for risk purposes
+         (so we don't double-count exposure), and we flag the correlation.
+    """
+    from config import MAX_SAME_DAY_RESOLUTIONS, MAX_YES_CONCENTRATION
+
+    direction = trade.get("direction", "YES")
+    new_event_key = derive_event_key(market.get("question", ""), market.get("category", "other"))
+    new_resolve_day = _resolve_day(market)
+
+    # ── Correlated-market dedup ──
+    event_keys = {}
+    for p in open_positions:
+        ek = p.get("event_key") or derive_event_key(p.get("question", ""), p.get("category", "other"))
+        event_keys.setdefault(ek, []).append(p)
+    correlated = new_event_key in event_keys
+
+    # Distinct events = dedup count (correlated markets collapse to one).
+    dedup_count = len(event_keys) + (0 if correlated else 1)
+
+    # ── Same-day resolution clustering ──
+    same_day = 1  # this trade
+    if new_resolve_day:
+        for p in open_positions:
+            if p.get("resolve_date") and str(p["resolve_date"])[:10] == new_resolve_day:
+                same_day += 1
+    if same_day > MAX_SAME_DAY_RESOLUTIONS:
+        return {
+            "reject": True,
+            "reason": f"Event clustering: {same_day} positions resolve on {new_resolve_day} "
+                      f"(max {MAX_SAME_DAY_RESOLUTIONS})",
+            "dedup_count": dedup_count, "same_day_count": same_day,
+            "yes_pct": 0.0, "correlated": correlated, "event_key": new_event_key,
+        }
+
+    # ── Directional concentration (YES bias) ──
+    # Count correlated markets once: skip positions sharing the new event_key
+    # from the denominator to avoid double-penalizing.
+    considered = [p for p in open_positions if (p.get("event_key") or
+                  derive_event_key(p.get("question",""), p.get("category","other"))) != new_event_key]
+    yes_count = sum(1 for p in considered if p.get("direction") == "YES")
+    if direction == "YES":
+        yes_count += 1
+    total = len(considered) + 1
+    yes_pct = yes_count / total if total else 0.0
+    if total >= 4 and yes_pct > MAX_YES_CONCENTRATION:
+        return {
+            "reject": True,
+            "reason": f"Directional concentration: {yes_pct:.0%} of {total} positions would be YES "
+                      f"(max {MAX_YES_CONCENTRATION:.0%})",
+            "dedup_count": dedup_count, "same_day_count": same_day,
+            "yes_pct": yes_pct, "correlated": correlated, "event_key": new_event_key,
+        }
+
+    return {
+        "reject": False, "reason": "Passed hard checks",
+        "dedup_count": dedup_count, "same_day_count": same_day,
+        "yes_pct": yes_pct, "correlated": correlated, "event_key": new_event_key,
+    }
+
+
+def _resolve_day(market: dict) -> str | None:
+    expiry = market.get("endDate") or market.get("endDateIso") or market.get("resolve_date")
+    if not expiry:
+        return None
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
+        return dt.date().isoformat()
+    except Exception:
+        return str(expiry)[:10] or None
+
+
 HEADERS = {
     "Authorization": f"Bearer {VIRTUALS_API_KEY}",
     "Content-Type": "application/json",
@@ -453,9 +560,30 @@ def run_committee(trade: dict, market: dict, current_price: float,
             "committee_reports": {"whale_intent": whale_intent, "efficiency": efficiency, "archetype": archetype_result, "cro": cro},
         }
 
-    # Agent 7: Portfolio Risk
+    # Deterministic portfolio guardrails (run BEFORE the LLM agent).
+    hard = portfolio_hard_checks(trade, market, open_positions)
+    if hard.get("reject"):
+        logger.info(f"  PORTFOLIO HARD-REJECT: {hard.get('reason')}")
+        return {
+            "verdict": "REJECT", "conviction": 0,
+            "direction": "SKIP", "capital_allocation": 0,
+            "my_probability": current_price,
+            "reasoning": f"Portfolio guardrail: {hard.get('reason')}",
+            "consensus_score": consensus_score,
+            "committee_reports": {
+                "whale_intent": whale_intent, "efficiency": efficiency,
+                "archetype": archetype_result, "cro": cro,
+                "portfolio": {"verdict": "Reject", "hard_checks": hard,
+                              "reasoning": hard.get("reason")},
+            },
+        }
+
+    # Agent 7: Portfolio Risk (LLM)
     logger.info("  [5/6] Portfolio risk assessment...")
     portfolio = run_portfolio_risk(trade, market, open_positions)
+    portfolio["hard_checks"] = hard
+    if hard.get("correlated"):
+        logger.info(f"  Correlated market detected (event_key={hard.get('event_key')}) — counts as 1 position")
 
     if portfolio.get("verdict") == "Reject":
         logger.info("  Portfolio risk manager REJECTED")

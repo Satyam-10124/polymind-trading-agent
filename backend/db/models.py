@@ -128,6 +128,8 @@ def _run_migrations():
     # Columns added after initial release — safe to run repeatedly.
     _safe_add_column("positions", "category", "TEXT")
     _safe_add_column("positions", "consensus_score", "REAL DEFAULT 0")
+    _safe_add_column("positions", "resolve_date", "TEXT")
+    _safe_add_column("positions", "event_key", "TEXT")
     _safe_add_column("signals", "consensus_score", "REAL DEFAULT 0")
     _safe_add_column("signals", "position_id", "TEXT")
 
@@ -186,14 +188,16 @@ def save_position(pos: dict):
     conn.execute("""
     INSERT OR REPLACE INTO positions
     (id, question, market_id, token_id, direction, entry_price, size, shares,
-     status, source, whale_name, claude_score, reasoning, category, consensus_score, opened_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     status, source, whale_name, claude_score, reasoning, category, consensus_score,
+     resolve_date, event_key, opened_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         pos["id"], pos.get("question"), pos.get("market_id"), pos.get("token_id"),
         pos.get("direction"), pos.get("entry_price"), pos.get("size"), pos.get("shares"),
         "open", pos.get("source", "whale"), pos.get("whale_name"),
         pos.get("claude_score"), pos.get("reasoning"),
         pos.get("category", "other"), pos.get("consensus_score", 0),
+        pos.get("resolve_date"), pos.get("event_key"),
         datetime.now(timezone.utc).isoformat(),
     ))
     conn.commit()
