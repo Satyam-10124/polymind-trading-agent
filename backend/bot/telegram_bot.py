@@ -1,7 +1,10 @@
 import logging
 import threading
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, PAPER_MODE
-from db.models import get_stats, get_open_positions, get_all_positions
+from db.models import (
+    get_stats, get_open_positions, get_all_positions,
+    get_whale_profiles, get_committee_report, get_lessons,
+)
 from executor.clob_client import get_wallet_balance
 from risk.tp_sl_manager import compute_pnl, get_current_price
 
@@ -79,6 +82,74 @@ def _fmt_history() -> str:
     return "\n".join(lines)
 
 
+def _fmt_whales() -> str:
+    whales = get_whale_profiles()
+    if not whales:
+        return "🐳 No whales profiled yet"
+    lines = ["*Top 5 Whales by PnL*\n"]
+    for w in whales[:5]:
+        cats = w.get("category_win_rates", {}) or {}
+        cat_str = ", ".join(f"{k} {v:.0%}" for k, v in list(cats.items())[:3]) or "—"
+        lines.append(
+            f"🐳 *{w.get('username') or w.get('wallet','?')[:10]}*\n"
+            f"   PnL: ${float(w.get('pnl',0)):,.0f} | Win: {float(w.get('win_rate',0)):.0%}\n"
+            f"   Cats: {cat_str}\n"
+            f"   Style: {w.get('conviction_signal','?')} | "
+            f"Hold: {float(w.get('avg_hold_hours',0)):.0f}h | "
+            f"{'closes early' if w.get('closes_early') else 'to resolution'}\n"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_committee(trade_id: str) -> str:
+    report = get_committee_report(trade_id)
+    if report is None and trade_id.isdigit():
+        from db.models import get_conn
+        conn = get_conn()
+        row = conn.execute("SELECT position_id FROM signals WHERE id=?", (int(trade_id),)).fetchone()
+        conn.close()
+        if row and row["position_id"]:
+            report = get_committee_report(row["position_id"])
+    if report is None:
+        return f"❓ No committee report for `{trade_id}`"
+
+    wi   = report.get("whale_intent", {})
+    eff  = report.get("efficiency", {})
+    arch = report.get("archetype", {})
+    cro  = report.get("cro", {})
+    pf   = report.get("portfolio", {})
+    sz   = report.get("sizing", {})
+    flaws = cro.get("top_failure_modes", cro.get("fatal_flaws", []))
+    return (
+        f"*Committee Report* — {report.get('question','?')[:50]}\n"
+        f"Verdict: *{report.get('verdict','?')}* | Conviction: {report.get('conviction','?')}/10\n\n"
+        f"🐳 *Whale Intent*: {wi.get('intent','?')} | alpha {wi.get('alpha_confidence','?')}%\n"
+        f"📊 *Efficiency*: {eff.get('efficiency_state','?')} | misprice {eff.get('mispricing_confidence','?')}%\n"
+        f"🗂 *Archetype*: {arch.get('archetype','?')} | decay {arch.get('info_decay_hours','?')}h\n"
+        f"🛡 *CRO*: {cro.get('rejection_risk_pct', cro.get('rejection_probability','?'))}% reject risk\n"
+        f"   Liquidity: {cro.get('liquidity_risk','?')[:60]}\n"
+        f"   Whale exit: {cro.get('whale_exit_risk','?')[:60]}\n"
+        f"   Failure modes: {'; '.join(flaws[:3])}\n"
+        f"📁 *Portfolio*: {pf.get('verdict','?')} | size adj {pf.get('size_adjustment','?')}x\n"
+        f"💰 *Sizing*: kelly {sz.get('kelly_fraction','?')} | ${sz.get('dollar_amount','?')}\n"
+    )
+
+
+def _fmt_lessons() -> str:
+    lessons = get_lessons(limit=10)
+    if not lessons:
+        return "🎓 No lessons recorded yet"
+    lines = ["*Last 10 Post-Mortem Lessons*\n"]
+    for l in lessons:
+        helped = (l.get("reduced_losses", 0) or 0) > (l.get("ignored", 0) or 0)
+        tag = "✅" if l.get("applied_count") and helped else ("⚠️" if l.get("ignored") else "•")
+        lines.append(
+            f"{tag} [{l.get('category','?')}] {l.get('lesson','')[:90]}\n"
+            f"   → {l.get('future_rule','')[:80]}\n"
+        )
+    return "\n".join(lines)
+
+
 def setup_handlers():
     if not _bot:
         return
@@ -114,6 +185,22 @@ def setup_handlers():
         position_check_job()
         _bot.reply_to(message, "✅ Exit orders placed")
 
+    @_bot.message_handler(commands=["whales"])
+    def cmd_whales(message):
+        _bot.reply_to(message, _fmt_whales())
+
+    @_bot.message_handler(commands=["committee"])
+    def cmd_committee(message):
+        parts = (message.text or "").split(maxsplit=1)
+        if len(parts) < 2:
+            _bot.reply_to(message, "Usage: /committee <trade_id>")
+            return
+        _bot.reply_to(message, _fmt_committee(parts[1].strip()))
+
+    @_bot.message_handler(commands=["lessons"])
+    def cmd_lessons(message):
+        _bot.reply_to(message, _fmt_lessons())
+
     @_bot.message_handler(commands=["help"])
     def cmd_help(message):
         _bot.reply_to(message, (
@@ -121,6 +208,9 @@ def setup_handlers():
             "/status — bankroll, PnL, win rate\n"
             "/positions — open positions\n"
             "/history — last 10 trades\n"
+            "/whales — top 5 whales by PnL\n"
+            "/committee <id> — full 9-agent breakdown\n"
+            "/lessons — last 10 post-mortem lessons\n"
             "/pause — pause trading\n"
             "/resume — resume trading\n"
             "/exit\\_all — emergency close all\n"
