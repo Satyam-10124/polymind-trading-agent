@@ -89,17 +89,22 @@ ARCHETYPE_TOOL = {
 
 CRO_TOOL = {
     "name": "cro_report",
-    "description": "Chief Risk Officer adversarial review",
+    "description": "Chief Risk Officer adversarial review attacking liquidity, timing, whale-exit and correlation risk",
     "input_schema": {
         "type": "object",
         "properties": {
-            "rejection_probability": {"type": "number", "minimum": 0, "maximum": 100, "description": "% chance thesis is wrong"},
+            "rejection_risk_pct":  {"type": "number", "minimum": 0, "maximum": 100, "description": "% probability the thesis is wrong"},
             "verdict":             {"type": "string", "enum": ["APPROVE", "CAUTION", "REJECT"]},
-            "fatal_flaws":         {"type": "array", "items": {"type": "string"}, "maxItems": 5},
-            "tail_risks":          {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+            "liquidity_risk":      {"type": "string", "description": "Concrete liquidity/exit risk assessment", "maxLength": 200},
+            "event_timing_risk":   {"type": "string", "description": "Catalyst-already-priced / whipsaw risk", "maxLength": 200},
+            "whale_exit_risk":     {"type": "string", "description": "Risk the followed whale dumps / we are exit liquidity", "maxLength": 200},
+            "correlation_risk":    {"type": "string", "description": "Overlap with existing open positions", "maxLength": 200},
+            "top_failure_modes":   {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3, "description": "Top 3 concrete ways this loses money"},
             "reasoning":           {"type": "string", "maxLength": 400},
         },
-        "required": ["rejection_probability", "verdict", "fatal_flaws", "reasoning"]
+        "required": ["rejection_risk_pct", "verdict", "liquidity_risk",
+                     "event_timing_risk", "whale_exit_risk", "correlation_risk",
+                     "top_failure_modes", "reasoning"]
     }
 }
 
@@ -272,19 +277,48 @@ def run_archetype(market: dict, current_price: float) -> dict:
     return result or {"archetype": "Other", "info_decay_hours": 24, "recommended_max_hold_days": 14}
 
 
-def run_cro(trade: dict, market: dict, current_price: float, analyst_score: int, edge: float, reasoning: str) -> dict:
+def run_cro(trade: dict, market: dict, current_price: float, analyst_score: int,
+            edge: float, reasoning: str, open_positions: list | None = None,
+            whale_profile: dict | None = None) -> dict:
+    open_positions = open_positions or []
+    whale_profile  = whale_profile or {}
+    pos_summary = "\n".join(
+        f"  - {p.get('direction')} {p.get('question','?')[:45]} | {p.get('category','?')}"
+        for p in open_positions[:8]
+    ) or "  No open positions"
+    exit_profile = (
+        f"{whale_profile.get('conviction_signal','unknown')}, "
+        f"{'closes early' if whale_profile.get('closes_early') else 'holds to resolution'}, "
+        f"avg hold {whale_profile.get('avg_hold_hours', 0)}h"
+    )
     user = CRO_USER.format(
         question       = market.get("question", ""),
+        category       = market.get("category", "other"),
         direction      = trade.get("direction", "YES"),
         yes_price      = current_price * 100,
         analyst_score  = analyst_score,
         whale_username = trade.get("whale_username", "Unknown"),
         whale_pnl      = trade.get("whale_pnl", 0),
+        whale_exit_profile = exit_profile,
         edge           = edge,
+        volume         = float(market.get("volume", 0) or 0),
+        days_to_expiry = market.get("days_to_expiry", 14),
+        open_positions_summary = pos_summary,
         reasoning      = reasoning,
     )
     result = _call(CRO_SYSTEM, user, CRO_TOOL)
-    return result or {"rejection_probability": 50, "verdict": "CAUTION", "fatal_flaws": ["API unavailable"], "reasoning": "Could not complete CRO review"}
+    if not result:
+        result = {
+            "rejection_risk_pct": 50, "verdict": "CAUTION",
+            "liquidity_risk": "unknown", "event_timing_risk": "unknown",
+            "whale_exit_risk": "unknown", "correlation_risk": "unknown",
+            "top_failure_modes": ["API unavailable"],
+            "reasoning": "Could not complete CRO review",
+        }
+    # Backward-compat aliases used elsewhere in the pipeline / notifications.
+    result["rejection_probability"] = result.get("rejection_risk_pct", result.get("rejection_probability", 50))
+    result["fatal_flaws"] = result.get("top_failure_modes", result.get("fatal_flaws", []))
+    return result
 
 
 def run_portfolio_risk(trade: dict, market: dict, open_positions: list) -> dict:
@@ -404,6 +438,8 @@ def run_committee(trade: dict, market: dict, current_price: float,
         analyst_score = whale_intent.get("intent_score", 5),
         edge          = efficiency.get("prob_base", current_price) - current_price,
         reasoning     = whale_intent.get("reasoning", ""),
+        open_positions = open_positions,
+        whale_profile  = whale_profile,
     )
 
     # Auto-reject if CRO rejection probability > 40%
