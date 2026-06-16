@@ -3,7 +3,7 @@ import time
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from db.models import init_db
-from scheduler.jobs import whale_scan_job, position_check_job, daily_report_job, set_telegram
+from scheduler.jobs import whale_scan_job, position_check_job, daily_report_job, post_mortem_job, set_telegram
 from bot.telegram_bot import send_message, start_polling, is_paused
 from config import SCAN_INTERVAL, POSITION_CHECK_SECS, PAPER_MODE
 
@@ -50,6 +50,7 @@ def main():
     scheduler = BackgroundScheduler()
     scheduler.add_job(guarded_whale_scan,    "interval", seconds=SCAN_INTERVAL,       id="whale_scan")
     scheduler.add_job(guarded_position_check,"interval", seconds=POSITION_CHECK_SECS, id="pos_check")
+    scheduler.add_job(post_mortem_job,       "interval", minutes=30,                  id="post_mortem")
     scheduler.add_job(daily_report_job,      "cron",     hour=21, minute=0,           id="daily_report")
     scheduler.start()
 

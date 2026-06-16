@@ -15,6 +15,46 @@ def get_conn():
 def init_db():
     conn = get_conn()
     conn.executescript("""
+    CREATE TABLE IF NOT EXISTS post_mortems (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        position_id     TEXT,
+        question        TEXT,
+        direction       TEXT,
+        entry_price     REAL,
+        exit_price      REAL,
+        pnl             REAL,
+        exit_reason     TEXT,
+        edge_was_real   INTEGER,
+        thesis_correct  INTEGER,
+        lessons         TEXT,
+        future_rules    TEXT,
+        prompt_adjustments TEXT,
+        created_at      TEXT
+    );
+    CREATE TABLE IF NOT EXISTS committee_reports (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        position_id     TEXT,
+        question        TEXT,
+        verdict         TEXT,
+        conviction      INTEGER,
+        whale_intent    TEXT,
+        efficiency      TEXT,
+        archetype       TEXT,
+        cro             TEXT,
+        portfolio       TEXT,
+        sizing          TEXT,
+        created_at      TEXT
+    );
+    """)
+    conn.commit()
+    conn.close()
+
+    _init_positions_tables(conn)
+
+
+def _init_positions_tables(conn):
+    conn = get_conn()
+    conn.executescript("""
     CREATE TABLE IF NOT EXISTS positions (
         id          TEXT PRIMARY KEY,
         question    TEXT,
@@ -119,6 +159,61 @@ def save_signal(sig: dict):
     ))
     conn.commit()
     conn.close()
+
+
+def save_post_mortem(position: dict, report: dict):
+    conn = get_conn()
+    conn.execute("""
+    INSERT INTO post_mortems
+    (position_id, question, direction, entry_price, exit_price, pnl, exit_reason,
+     edge_was_real, thesis_correct, lessons, future_rules, prompt_adjustments, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        position.get("id"), position.get("question"), position.get("direction"),
+        position.get("entry_price"), position.get("exit_price"), position.get("pnl"),
+        position.get("exit_reason"),
+        int(report.get("edge_was_real", False)),
+        int(report.get("thesis_correct", False)),
+        json.dumps(report.get("lessons", [])),
+        json.dumps(report.get("future_rules", [])),
+        report.get("prompt_adjustments", ""),
+        datetime.now(timezone.utc).isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def save_committee_report(position_id: str, question: str, verdict: dict):
+    import json as _json
+    reports = verdict.get("committee_reports", {})
+    conn = get_conn()
+    conn.execute("""
+    INSERT INTO committee_reports
+    (position_id, question, verdict, conviction, whale_intent, efficiency,
+     archetype, cro, portfolio, sizing, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        position_id, question,
+        verdict.get("verdict"), verdict.get("conviction"),
+        _json.dumps(reports.get("whale_intent", {})),
+        _json.dumps(reports.get("efficiency", {})),
+        _json.dumps(reports.get("archetype", {})),
+        _json.dumps(reports.get("cro", {})),
+        _json.dumps(reports.get("portfolio", {})),
+        _json.dumps(reports.get("sizing", {})),
+        datetime.now(timezone.utc).isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_post_mortems(limit: int = 20) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM post_mortems ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_stats() -> dict:
