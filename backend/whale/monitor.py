@@ -2,11 +2,18 @@ import requests
 import time
 import logging
 from typing import Optional
-from config import DATA_API, WHALE_MIN_PNL, WHALE_MIN_WIN_RATE, COPY_MAX_DELAY_SECS, BLOCK_CATEGORIES
+from config import (
+    DATA_API, WHALE_MIN_PNL, WHALE_MIN_WIN_RATE, COPY_MAX_DELAY_SECS,
+    BLOCK_CATEGORIES, CONSENSUS_MIN_WHALES, CONSENSUS_WINDOW_SECS,
+)
 
 logger = logging.getLogger(__name__)
 
 seen_trade_ids: set = set()
+
+# Rolling buffer of recent whale bets for consensus detection.
+# Each entry: {market_id, direction, wallet, username, pnl, ts}
+_recent_bets: list[dict] = []
 
 
 def get_leaderboard(limit: int = 30) -> list[dict]:
@@ -88,6 +95,78 @@ def is_blocked_category(market_question: str) -> bool:
     return any(cat in q for cat in BLOCK_CATEGORIES)
 
 
+def _whale_tier_weight(pnl: float) -> float:
+    """Map a whale's all-time PnL to a tier weight in [0.3, 1.0]."""
+    if pnl >= 1_000_000:
+        return 1.0
+    if pnl >= 250_000:
+        return 0.8
+    if pnl >= 50_000:
+        return 0.6
+    if pnl >= 10_000:
+        return 0.45
+    return 0.3
+
+
+def _prune_recent_bets(now: float | None = None):
+    now = now or time.time()
+    cutoff = now - CONSENSUS_WINDOW_SECS
+    _recent_bets[:] = [b for b in _recent_bets if b["ts"] >= cutoff]
+
+
+def record_bet(market_id: str, direction: str, wallet: str, username: str,
+               pnl: float, ts: float | None = None):
+    """Add a whale bet to the rolling consensus buffer."""
+    if not market_id:
+        return
+    ts = ts or time.time()
+    _prune_recent_bets(ts)
+    # De-dupe: one vote per wallet per market+direction inside the window.
+    for b in _recent_bets:
+        if b["wallet"] == wallet and b["market_id"] == market_id and b["direction"] == direction:
+            b["ts"] = ts
+            return
+    _recent_bets.append({
+        "market_id": market_id, "direction": direction, "wallet": wallet,
+        "username": username, "pnl": float(pnl or 0), "ts": ts,
+    })
+
+
+def compute_consensus(market_id: str, direction: str, now: float | None = None) -> dict:
+    """
+    Returns consensus info for a market+direction:
+      {whale_count, consensus_score (0-1), whales: [...], aligned (bool)}
+
+    consensus_score blends:
+      - count factor   (how many whales agree, saturating at 5)
+      - tier factor    (average tier weight of agreeing whales)
+      - recency factor (more recent agreement scores higher)
+    """
+    now = now or time.time()
+    _prune_recent_bets(now)
+    agreeing = [
+        b for b in _recent_bets
+        if b["market_id"] == market_id and b["direction"] == direction
+    ]
+    count = len(agreeing)
+    if count == 0:
+        return {"whale_count": 0, "consensus_score": 0.0, "whales": [], "aligned": False}
+
+    count_factor = min(count, 5) / 5.0
+    tier_factor  = sum(_whale_tier_weight(b["pnl"]) for b in agreeing) / count
+    recency_factor = sum(
+        max(0.0, 1.0 - (now - b["ts"]) / CONSENSUS_WINDOW_SECS) for b in agreeing
+    ) / count
+
+    score = 0.5 * count_factor + 0.35 * tier_factor + 0.15 * recency_factor
+    return {
+        "whale_count":     count,
+        "consensus_score": round(min(1.0, score), 3),
+        "whales":          [{"username": b["username"], "pnl": b["pnl"]} for b in agreeing],
+        "aligned":         count >= CONSENSUS_MIN_WHALES,
+    }
+
+
 def scan_new_whale_trades(whales: list[dict]) -> list[dict]:
     new_trades = []
     for whale in whales:
@@ -111,6 +190,20 @@ def scan_new_whale_trades(whales: list[dict]) -> list[dict]:
             trade["whale_username"]  = whale.get("userName", wallet[:8])
             trade["whale_pnl"]       = whale.get("pnl", 0)
             trade["whale_win_rate"]  = whale.get("estimated_win_rate", 0)
+
+            # Feed the rolling consensus buffer.
+            market_id = (
+                trade.get("conditionId")
+                or trade.get("market", {}).get("conditionId")
+                or trade.get("market", {}).get("id")
+                or trade.get("slug")
+            )
+            direction = (trade.get("side") or trade.get("outcome") or "YES").upper()
+            record_bet(
+                market_id, direction, wallet,
+                trade["whale_username"], trade["whale_pnl"],
+            )
+
             new_trades.append(trade)
             logger.info(f"New whale trade: {whale.get('userName')} → {question[:60]}")
     return new_trades

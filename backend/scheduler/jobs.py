@@ -3,15 +3,18 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from config import MAX_OPEN_POSITIONS, PAPER_MODE
-from whale.monitor import get_leaderboard, filter_whales, scan_new_whale_trades
+from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES
+from whale.monitor import (
+    get_leaderboard, filter_whales, scan_new_whale_trades, compute_consensus,
+)
 from whale.profiler import build_profile, get_size_multiplier
 from brain.committee import run_committee, run_post_mortem
 from risk.tp_sl_manager import check_position, compute_pnl, get_current_price
 from executor.clob_client import place_order, sell_position, get_wallet_balance
 from db.models import (
     save_position, close_position, get_open_positions,
-    save_signal, get_stats, save_post_mortem, save_committee_report
+    save_signal, get_stats, save_post_mortem, save_committee_report,
+    save_consensus_event, save_whale_profile, save_lessons,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,8 +95,45 @@ def whale_scan_job():
         trade["whale_size"]  = float(trade.get("usdcSize") or trade.get("amount") or 0)
         trade["trade_age_seconds"] = int(time.time() - float(trade.get("timestamp") or time.time()))
 
+        # ── Multi-whale consensus filter ──
+        # Only convene the (expensive) committee when CONSENSUS_MIN_WHALES
+        # tracked whales have bet the same direction on this market within
+        # the rolling window.
+        consensus = compute_consensus(market_id, side)
+        if not consensus.get("aligned"):
+            logger.info(
+                f"Consensus not reached for {question[:50]} — "
+                f"{consensus.get('whale_count',0)}/{CONSENSUS_MIN_WHALES} whales {side}. Skipping."
+            )
+            continue
+
+        logger.info(
+            f"🐳 CONSENSUS: {consensus['whale_count']} whales aligned {side} "
+            f"(score {consensus['consensus_score']:.2f}) on {question[:50]}"
+        )
+        save_consensus_event({
+            "market_id":       market_id,
+            "question":        question,
+            "direction":       side,
+            "whale_count":     consensus["whale_count"],
+            "consensus_score": consensus["consensus_score"],
+            "whales":          consensus["whales"],
+        })
+        whale_names = ", ".join(w["username"] for w in consensus["whales"][:5])
+        notify(
+            f"🐳 *CONSENSUS TRIGGER* ({consensus['whale_count']} whales aligned)\n"
+            f"Market: {question[:55]}\n"
+            f"Direction: {side} | Score: {consensus['consensus_score']:.2f}\n"
+            f"Whales: {whale_names}\n"
+            f"→ Convening Investment Committee..."
+        )
+
         whale_wallet  = trade.get("whale_wallet", "")
         whale_profile = build_profile(whale_wallet, trade.get("whale_username", ""), trade.get("whale_pnl", 0))
+        try:
+            save_whale_profile(whale_profile)
+        except Exception as e:
+            logger.error(f"save_whale_profile failed: {e}")
 
         verdict = run_committee(
             trade         = trade,
@@ -102,17 +142,19 @@ def whale_scan_job():
             whale_profile = whale_profile,
             open_positions = open_pos,
             bankroll      = bankroll,
+            consensus     = consensus,
         )
 
         save_signal({
-            "question":   question,
-            "market_id":  market_id,
-            "direction":  verdict.get("direction"),
-            "score":      verdict.get("conviction", 0),
-            "edge":       verdict.get("edge", 0),
-            "reasoning":  verdict.get("reasoning"),
-            "key_facts":  [],
-            "action":     "trade" if verdict.get("verdict") == "APPROVE" else "skip",
+            "question":        question,
+            "market_id":       market_id,
+            "direction":       verdict.get("direction"),
+            "score":           verdict.get("conviction", 0),
+            "edge":            verdict.get("edge", 0),
+            "reasoning":       verdict.get("reasoning"),
+            "key_facts":       [],
+            "action":          "trade" if verdict.get("verdict") == "APPROVE" else "skip",
+            "consensus_score": consensus.get("consensus_score", 0),
         })
 
         if verdict.get("verdict") != "APPROVE":
@@ -145,6 +187,8 @@ def whale_scan_job():
             "whale_name":   trade.get("whale_username", "Unknown"),
             "claude_score": verdict.get("conviction"),
             "reasoning":    verdict.get("reasoning"),
+            "category":     market.get("category", "other"),
+            "consensus_score": consensus.get("consensus_score", 0),
         }
         save_position(pos)
         save_committee_report(pos_id, question, verdict)

@@ -358,12 +358,21 @@ def run_final_committee(trade: dict, market: dict, current_price: float,
 
 def run_committee(trade: dict, market: dict, current_price: float,
                   whale_profile: dict, open_positions: list,
-                  bankroll: float) -> dict:
+                  bankroll: float, consensus: dict | None = None) -> dict:
     """
     Run the full 9-agent institutional decision pipeline.
     Returns final committee verdict dict.
+
+    `consensus` (optional): {whale_count, consensus_score, whales, aligned}
+    from the multi-whale consensus filter. The score is fed to the committee
+    and sizing agents as an additional conviction signal.
     """
-    logger.info(f"Committee convening for: {market.get('question','?')[:60]}")
+    consensus = consensus or {"whale_count": 1, "consensus_score": 0.0, "whales": []}
+    consensus_score = float(consensus.get("consensus_score", 0.0))
+    logger.info(
+        f"Committee convening for: {market.get('question','?')[:60]} "
+        f"(consensus {consensus.get('whale_count',1)} whales, score {consensus_score:.2f})"
+    )
 
     # Agent 2: Whale Intent
     logger.info("  [1/6] Whale intent analysis...")
@@ -431,10 +440,22 @@ def run_committee(trade: dict, market: dict, current_price: float,
     size_adj = portfolio.get("size_adjustment", 1.0)
     final_size = sizing.get("dollar_amount", 2.0) * size_adj
 
+    # Consensus boost: multiple aligned whales raise conviction and size.
+    # Up to +40% size at a perfect consensus score.
+    consensus_mult = 1.0 + 0.4 * consensus_score
+    final_size *= consensus_mult
+
     # Agent 1 (final): Investment Committee vote
     logger.info("  [Committee] Final vote...")
     verdict = run_final_committee(trade, market, current_price, whale_intent, efficiency, archetype_result, cro, portfolio)
     verdict["capital_allocation"] = final_size
+    verdict["consensus_score"]    = consensus_score
+    verdict["consensus_whales"]   = consensus.get("whale_count", 1)
+
+    # A strong consensus nudges conviction up by 1 (capped at 10).
+    if consensus_score >= 0.6 and verdict.get("conviction"):
+        verdict["conviction"] = min(10, int(verdict["conviction"]) + 1)
+
     verdict["committee_reports"] = {
         "whale_intent":  whale_intent,
         "efficiency":    efficiency,
@@ -442,6 +463,7 @@ def run_committee(trade: dict, market: dict, current_price: float,
         "cro":           cro,
         "portfolio":     portfolio,
         "sizing":        sizing,
+        "consensus":     consensus,
     }
 
     logger.info(
