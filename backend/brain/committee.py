@@ -482,10 +482,24 @@ def run_sizing(bankroll: float, my_prob: float, market_price: float,
     return result or {"kelly_fraction": 0.25, "allocation_pct": 2.5, "dollar_amount": bankroll * 0.025, "reasoning": "Default conservative sizing"}
 
 
+def _format_lessons(lessons: list) -> str:
+    if not lessons:
+        return "No prior lessons for this category yet."
+    out = []
+    for l in lessons[:5]:
+        tag = "✅ helped" if l.get("reduced_losses", 0) > l.get("ignored", 0) else (
+            "⚠️ ignored" if l.get("ignored", 0) > 0 else "• new")
+        out.append(f"  [{tag}] {l.get('lesson','')} → rule: {l.get('future_rule','')}")
+    return "\n".join(out)
+
+
 def run_final_committee(trade: dict, market: dict, current_price: float,
                         whale_intent: dict, efficiency: dict,
-                        archetype: dict, cro: dict, portfolio: dict) -> dict:
+                        archetype: dict, cro: dict, portfolio: dict,
+                        lessons: list | None = None) -> dict:
+    lessons_block = _format_lessons(lessons or [])
     user = COMMITTEE_USER.format(
+        prior_lessons     = lessons_block,
         question          = market.get("question", ""),
         yes_price         = current_price * 100,
         category          = market.get("category", "other"),
@@ -510,7 +524,8 @@ def run_final_committee(trade: dict, market: dict, current_price: float,
 
 def run_committee(trade: dict, market: dict, current_price: float,
                   whale_profile: dict, open_positions: list,
-                  bankroll: float, consensus: dict | None = None) -> dict:
+                  bankroll: float, consensus: dict | None = None,
+                  lessons: list | None = None) -> dict:
     """
     Run the full 9-agent institutional decision pipeline.
     Returns final committee verdict dict.
@@ -518,9 +533,19 @@ def run_committee(trade: dict, market: dict, current_price: float,
     `consensus` (optional): {whale_count, consensus_score, whales, aligned}
     from the multi-whale consensus filter. The score is fed to the committee
     and sizing agents as an additional conviction signal.
+
+    `lessons` (optional): recent post-mortem lessons for this event category,
+    injected into the final committee prompt. Fetched automatically if None.
     """
     consensus = consensus or {"whale_count": 1, "consensus_score": 0.0, "whales": []}
     consensus_score = float(consensus.get("consensus_score", 0.0))
+
+    if lessons is None:
+        try:
+            from db.models import get_recent_lessons_for_category
+            lessons = get_recent_lessons_for_category(market.get("category", "other"), limit=5)
+        except Exception:
+            lessons = []
     logger.info(
         f"Committee convening for: {market.get('question','?')[:60]} "
         f"(consensus {consensus.get('whale_count',1)} whales, score {consensus_score:.2f})"
@@ -622,7 +647,7 @@ def run_committee(trade: dict, market: dict, current_price: float,
 
     # Agent 1 (final): Investment Committee vote
     logger.info("  [Committee] Final vote...")
-    verdict = run_final_committee(trade, market, current_price, whale_intent, efficiency, archetype_result, cro, portfolio)
+    verdict = run_final_committee(trade, market, current_price, whale_intent, efficiency, archetype_result, cro, portfolio, lessons)
     verdict["capital_allocation"] = final_size
     verdict["consensus_score"]    = consensus_score
     verdict["consensus_whales"]   = consensus.get("whale_count", 1)

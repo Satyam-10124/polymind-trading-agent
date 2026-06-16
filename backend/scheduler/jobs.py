@@ -16,6 +16,7 @@ from db.models import (
     save_position, close_position, get_open_positions,
     save_signal, get_stats, save_post_mortem, save_committee_report,
     save_consensus_event, save_whale_profile, save_lessons, get_recent_outcomes,
+    mark_lessons_applied, get_recent_lessons_for_category,
 )
 
 logger = logging.getLogger(__name__)
@@ -315,6 +316,17 @@ def post_mortem_job():
         pos["hold_days"] = hold_days
         report = run_post_mortem(pos)
         save_post_mortem(pos, report)
+
+        # Learning loop: explode lessons into the lessons_learned table, and
+        # update whether the lessons we previously injected for this category
+        # actually reduced losses (a win => helped) or were ignored (a loss).
+        category = pos.get("category", "other")
+        try:
+            save_lessons(pos, report)
+            mark_lessons_applied(category, helped=float(pos.get("pnl", 0)) > 0)
+        except Exception as e:
+            logger.error(f"lessons persist failed: {e}")
+
         _post_mortem_done.add(pos_id)
 
         lessons_text = " | ".join(report.get("lessons", [])[:2])

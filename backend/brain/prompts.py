@@ -44,6 +44,9 @@ Market Efficiency Report: {efficiency_summary}
 CRO Red Team Report: {cro_summary}
 Portfolio Risk Report: {portfolio_summary}
 
+LESSONS FROM PRIOR TRADES IN THIS CATEGORY (apply them — do not repeat past mistakes):
+{prior_lessons}
+
 Search for recent news. Render a final committee verdict.
 """
 
