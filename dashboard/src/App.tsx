@@ -1,15 +1,21 @@
 import React, { useState } from 'react'
-import { BarChart2, Zap, List, BrainCircuit, Activity } from 'lucide-react'
+import { BarChart2, Zap, BrainCircuit, Activity, Grid3x3, Waves, GraduationCap } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import Positions from './pages/Positions'
 import Signals from './pages/Signals'
+import Committee from './pages/Committee'
+import Whales from './pages/Whales'
+import Lessons from './pages/Lessons'
 
-type Page = 'dashboard' | 'positions' | 'signals'
+type Page = 'dashboard' | 'positions' | 'signals' | 'committee' | 'whales' | 'lessons'
 
 const NAV = [
   { id: 'dashboard',  label: 'Dashboard',  icon: BarChart2 },
   { id: 'positions',  label: 'Positions',  icon: Zap },
   { id: 'signals',    label: 'Signals',    icon: BrainCircuit },
+  { id: 'committee',  label: 'Committee',  icon: Grid3x3 },
+  { id: 'whales',     label: 'Whales',     icon: Waves },
+  { id: 'lessons',    label: 'Lessons',    icon: GraduationCap },
 ]
 
 export default function App() {
@@ -73,6 +79,9 @@ export default function App() {
           {page === 'dashboard' && <Dashboard />}
           {page === 'positions' && <Positions />}
           {page === 'signals'   && <Signals />}
+          {page === 'committee' && <Committee />}
+          {page === 'whales'    && <Whales />}
+          {page === 'lessons'   && <Lessons />}
         </main>
       </div>
     </div>

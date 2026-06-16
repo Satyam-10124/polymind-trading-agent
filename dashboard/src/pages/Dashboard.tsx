@@ -1,8 +1,8 @@
 import React from 'react'
 import { TrendingUp, DollarSign, Target, Activity, Zap, BarChart2 } from 'lucide-react'
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import StatCard from '../components/StatCard'
-import { useStatus, usePositions, useHistory } from '../hooks/useApi'
+import { useStatus, usePositions, useEquity } from '../hooks/useApi'
 
 function pnlColor(val: number) {
   return val > 0 ? 'green' : val < 0 ? 'red' : 'default'
@@ -11,16 +11,13 @@ function pnlColor(val: number) {
 export default function Dashboard() {
   const { data: status, loading } = useStatus()
   const { data: openPos } = usePositions('open')
-  const { data: history } = useHistory()
+  const { data: equity } = useEquity()
 
-  const chartData = history
-    .filter(t => t.status === 'closed')
-    .slice(-20)
-    .reduce((acc: any[], t: any, i: number) => {
-      const prev = acc[i - 1]?.cumPnl ?? 0
-      acc.push({ name: `#${i + 1}`, cumPnl: +(prev + (t.pnl || 0)).toFixed(2) })
-      return acc
-    }, [])
+  const chartData = (equity || []).map((p: any) => ({
+    name: p.date,
+    equity: p.equity,
+    pnl: p.pnl,
+  }))
 
   if (loading) {
     return (
@@ -79,25 +76,33 @@ export default function Dashboard() {
       <div className="bg-[#0D1526] border border-[#1A2740] rounded-xl p-5">
         <div className="flex items-center gap-2 mb-4">
           <BarChart2 size={16} className="text-[#3BD6AC]" />
-          <span className="text-white font-semibold">Cumulative P&L</span>
+          <span className="text-white font-semibold">Equity Curve</span>
+          <span className="text-[#6B7FA3] text-xs ml-auto">daily, live</span>
         </div>
         {chartData.length > 1 ? (
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={chartData}>
+          <ResponsiveContainer width="100%" height={220}>
+            <AreaChart data={chartData}>
+              <defs>
+                <linearGradient id="eq" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#3BD6AC" stopOpacity={0.4} />
+                  <stop offset="100%" stopColor="#3BD6AC" stopOpacity={0} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1A2740" />
               <XAxis dataKey="name" tick={{ fill: '#6B7FA3', fontSize: 11 }} />
-              <YAxis tick={{ fill: '#6B7FA3', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#6B7FA3', fontSize: 11 }} domain={['auto', 'auto']} />
               <Tooltip
                 contentStyle={{ background: '#0D1526', border: '1px solid #1A2740', borderRadius: 8 }}
                 labelStyle={{ color: '#6B7FA3' }}
-                formatter={(v: any) => [`$${v}`, 'Cum. PnL']}
+                formatter={(v: any, n: any) => [`$${v}`, n === 'equity' ? 'Equity' : 'Daily PnL']}
               />
-              <Line type="monotone" dataKey="cumPnl" stroke="#3BD6AC" strokeWidth={2} dot={false} />
-            </LineChart>
+              <Area type="monotone" dataKey="equity" stroke="#3BD6AC" strokeWidth={2}
+                    fill="url(#eq)" dot={false} />
+            </AreaChart>
           </ResponsiveContainer>
         ) : (
-          <div className="h-[200px] flex items-center justify-center text-[#6B7FA3]">
-            No closed trades yet — run in paper mode first
+          <div className="h-[220px] flex items-center justify-center text-[#6B7FA3]">
+            No closed trades yet — equity curve builds as trades resolve
           </div>
         )}
       </div>

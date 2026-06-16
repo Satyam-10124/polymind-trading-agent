@@ -73,3 +73,41 @@ export function useSignals() {
 
   return { data, loading }
 }
+
+/** Generic polling fetch for the new pages. */
+function usePoll<T>(path: string, fallback: T, intervalMs = 20000) {
+  const [data, setData] = useState<T>(fallback)
+  const [loading, setLoading] = useState(true)
+
+  const fetch_ = useCallback(async () => {
+    try {
+      const r = await fetch(`${BASE}${path}`)
+      setData(await r.json())
+    } catch { /* keep previous */ }
+    finally { setLoading(false) }
+  }, [path])
+
+  useEffect(() => {
+    fetch_()
+    const id = setInterval(fetch_, intervalMs)
+    return () => clearInterval(id)
+  }, [fetch_, intervalMs])
+
+  return { data, loading, refetch: fetch_ }
+}
+
+export function useWhales() {
+  return usePoll<any[]>('/whales', [])
+}
+
+export function useCommitteeReports() {
+  return usePoll<any[]>('/committee', [])
+}
+
+export function useLessons(category = 'all') {
+  return usePoll<any[]>(`/lessons?category=${category}`, [])
+}
+
+export function useEquity() {
+  return usePoll<any[]>('/equity', [])
+}
