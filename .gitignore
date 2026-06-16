@@ -1,0 +1,29 @@
+# Environment — never commit keys
+backend/.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+*.db
+polymind.log
+
+# Node
+node_modules/
+dashboard/dist/
+dashboard/.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

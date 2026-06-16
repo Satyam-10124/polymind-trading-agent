@@ -1,0 +1,9 @@
+requests==2.32.3
+python-dotenv==1.0.1
+apscheduler==3.10.4
+fastapi==0.115.5
+uvicorn==0.32.0
+pyTelegramBotAPI==4.23.0
+eth-account==0.13.3
+py-clob-client==0.18.0
+web3==7.5.0
