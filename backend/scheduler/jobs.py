@@ -3,7 +3,8 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES
+from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BANKROLL
+from risk.kelly import kelly_bet
 from whale.monitor import (
     get_leaderboard, filter_whales, scan_new_whale_trades, compute_consensus,
 )
@@ -14,7 +15,7 @@ from executor.clob_client import place_order, sell_position, get_wallet_balance
 from db.models import (
     save_position, close_position, get_open_positions,
     save_signal, get_stats, save_post_mortem, save_committee_report,
-    save_consensus_event, save_whale_profile, save_lessons,
+    save_consensus_event, save_whale_profile, save_lessons, get_recent_outcomes,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,13 +168,29 @@ def whale_scan_job():
             )
             continue
 
-        bet_size = float(verdict.get("capital_allocation", 2.0))
+        pos_id = str(uuid.uuid4())
+
+        # Enhanced Kelly: recompute size with dynamic fraction + drawdown breaker,
+        # logging the full breakdown to SQLite. Take the more conservative of the
+        # committee's allocation and the Kelly-sized bet.
+        my_prob   = float(verdict.get("my_probability", current_price) or current_price)
+        recent    = get_recent_outcomes(limit=20)
+        kelly_size = kelly_bet(
+            bankroll        = bankroll,
+            my_prob         = my_prob,
+            market_price    = current_price,
+            recent_outcomes = recent,
+            peak_bankroll   = max(PEAK_BANKROLL, bankroll),
+            position_id     = pos_id,
+            question        = question,
+        )
+        committee_size = float(verdict.get("capital_allocation", 2.0))
+        bet_size = min(committee_size, kelly_size) if kelly_size > 0 else committee_size
         bet_size = max(1.0, min(bet_size, bankroll * 0.10))
         shares   = bet_size / current_price if current_price > 0 else 0
 
         place_order(token_id, side, bet_size, current_price)
 
-        pos_id = str(uuid.uuid4())
         pos = {
             "id":           pos_id,
             "question":     question,
