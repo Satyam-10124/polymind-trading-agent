@@ -74,12 +74,23 @@ Typical categories: {typical_categories}
 Average bet size: ${avg_bet_size:.2f}
 Recent win streak: {recent_streak}
 
+BEHAVIORAL PROFILE
+Per-category win rates: {category_win_rates}
+This category ({category}) win rate: {category_win_rate}
+Avg hold duration: {avg_hold_hours} hours
+Exit behavior: {exit_behavior} (holds to resolution {hold_to_resolution_pct})
+Conviction style: {conviction_signal} (avg {avg_tranches} tranches/market)
+
 CURRENT TRADE
 Market: {question}
 Direction: {direction} at {entry_price:.2f}¢
 Size: ${whale_size:.2f} (vs average ${avg_bet_size:.2f})
 Category: {category}
 Timing: {trade_age_seconds}s ago
+
+Weigh the whale's TRACK RECORD IN THIS CATEGORY heavily — a whale strong in
+crypto but weak in politics betting politics is a weaker signal. A multi-tranche
+accumulator signals higher conviction than a one-shot bettor.
 
 Is this whale's alpha real? What's their intent?
 """

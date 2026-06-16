@@ -217,6 +217,10 @@ def _call(system: str, user: str, tool: dict) -> dict | None:
 # ── Individual agents ─────────────────────────────────────────
 
 def run_whale_intent(trade: dict, profile: dict) -> dict:
+    category = trade.get("category", "other")
+    cat_rates = profile.get("category_win_rates", {}) or {}
+    this_cat_rate = cat_rates.get(category)
+    this_cat_str = f"{this_cat_rate:.0%}" if isinstance(this_cat_rate, (int, float)) else "no history"
     user = WHALE_INTENT_USER.format(
         whale_username   = trade.get("whale_username", "Unknown"),
         whale_pnl        = trade.get("whale_pnl", 0),
@@ -224,11 +228,18 @@ def run_whale_intent(trade: dict, profile: dict) -> dict:
         typical_categories = ", ".join(profile.get("top_categories", ["Unknown"])),
         avg_bet_size     = profile.get("avg_bet_size", 100),
         recent_streak    = profile.get("recent_streak", "Unknown"),
+        category_win_rates = ", ".join(f"{k}:{v:.0%}" for k, v in cat_rates.items()) or "none",
+        category_win_rate = this_cat_str,
+        avg_hold_hours   = profile.get("avg_hold_hours", 0),
+        exit_behavior    = "closes early" if profile.get("closes_early") else "holds long",
+        hold_to_resolution_pct = f"{profile.get('hold_to_resolution_pct', 0):.0%}",
+        conviction_signal = profile.get("conviction_signal", "unknown"),
+        avg_tranches     = profile.get("avg_tranches", 1),
         question         = trade.get("question", ""),
         direction        = trade.get("direction", "YES"),
         entry_price      = float(trade.get("entry_price", 0.5)) * 100,
         whale_size       = float(trade.get("whale_size", 0)),
-        category         = trade.get("category", "other"),
+        category         = category,
         trade_age_seconds = trade.get("trade_age_seconds", 0),
     )
     result = _call(WHALE_INTENT_SYSTEM, user, WHALE_INTENT_TOOL)
