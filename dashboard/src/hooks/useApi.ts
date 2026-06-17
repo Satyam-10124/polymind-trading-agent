@@ -111,3 +111,11 @@ export function useLessons(category = 'all') {
 export function useEquity() {
   return usePoll<any[]>('/equity', [])
 }
+
+export function useBacktests() {
+  return usePoll<any[]>('/backtests', [], 30000)
+}
+
+export function useCalibration() {
+  return usePoll<any>('/calibration', { n_samples: 0, factor: 1, curve: [] }, 30000)
+}

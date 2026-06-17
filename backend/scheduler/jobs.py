@@ -22,6 +22,9 @@ from db.models import (
 logger = logging.getLogger(__name__)
 
 _telegram_send = None
+# Tracks (market_id, direction) pairs already processed in this session
+# so the same consensus doesn't re-trigger the committee every 30s.
+_consensus_processed: set = set()
 
 
 def set_telegram(fn):
@@ -58,19 +61,46 @@ def whale_scan_job():
     bankroll = balance
 
     for trade in new_trades:
+        process_whale_trade(trade, open_pos, bankroll)
+
+
+def process_whale_trade(trade: dict, open_pos: list | None = None,
+                        bankroll: float | None = None):
+    """
+    Evaluate a single fresh whale trade: enrich market data, apply the consensus
+    gate, and (if aligned) convene the committee + size + execute.
+
+    Extracted from whale_scan_job so the event-driven LiveFeed can call it the
+    instant a trade is detected, instead of waiting for the next polling tick.
+    Both entry points share this body, so behavior is identical.
+    """
+    if open_pos is None:
+        open_pos = get_open_positions()
+    if len(open_pos) >= MAX_OPEN_POSITIONS:
+        logger.info(f"Max positions reached ({MAX_OPEN_POSITIONS}), skipping trade")
+        return
+    if bankroll is None:
+        bankroll = get_wallet_balance()
+
+    if True:
         market_id = trade.get("conditionId") or trade.get("market", {}).get("conditionId")
         question  = trade.get("title") or trade.get("market", {}).get("question", "Unknown")
 
-        import requests
+        import requests, json as _json
         from config import GAMMA_API
         from datetime import datetime, timezone
-        market = {}
-        try:
-            r = requests.get(f"{GAMMA_API}/markets", params={"conditionId": market_id}, timeout=10)
-            if r.ok and r.json():
-                market = r.json()[0]
-        except Exception:
-            market = {"question": question, "conditionId": market_id}
+        market = {"question": question, "conditionId": market_id}
+        if market_id:
+            try:
+                r = requests.get(f"{GAMMA_API}/markets", params={"conditionId": market_id}, timeout=10)
+                data = r.json() if r.ok else []
+                if data and isinstance(data, list):
+                    candidate = data[0]
+                    # Only accept if the conditionId actually matches
+                    if candidate.get("conditionId") == market_id or not candidate.get("conditionId"):
+                        market = candidate
+            except Exception:
+                pass
 
         expiry = market.get("endDate") or market.get("endDateIso", "")
         try:
@@ -80,13 +110,19 @@ def whale_scan_job():
             days_to_expiry = 14
         market["days_to_expiry"] = days_to_expiry
 
-        token_ids = market.get("clobTokenIds", [])
+        raw_token_ids = market.get("clobTokenIds", [])
+        if isinstance(raw_token_ids, str):
+            try:
+                raw_token_ids = _json.loads(raw_token_ids)
+            except Exception:
+                raw_token_ids = []
+        token_ids = raw_token_ids if isinstance(raw_token_ids, list) else []
         side      = (trade.get("side") or trade.get("outcome") or "YES").upper()
         token_id  = token_ids[0] if side == "YES" and token_ids else (token_ids[1] if len(token_ids) > 1 else None)
 
         if not token_id:
             logger.warning(f"No token_id for {question[:50]}")
-            continue
+            return
 
         current_price = get_current_price(token_id) or 0.5
 
@@ -101,13 +137,20 @@ def whale_scan_job():
         # Only convene the (expensive) committee when CONSENSUS_MIN_WHALES
         # tracked whales have bet the same direction on this market within
         # the rolling window.
+        consensus_key = (market_id, side)
+        if consensus_key in _consensus_processed:
+            logger.debug(f"Consensus already processed for {question[:50]}, skipping.")
+            return
+
         consensus = compute_consensus(market_id, side)
         if not consensus.get("aligned"):
             logger.info(
                 f"Consensus not reached for {question[:50]} — "
                 f"{consensus.get('whale_count',0)}/{CONSENSUS_MIN_WHALES} whales {side}. Skipping."
             )
-            continue
+            return
+
+        _consensus_processed.add(consensus_key)
 
         logger.info(
             f"🐳 CONSENSUS: {consensus['whale_count']} whales aligned {side} "
@@ -167,7 +210,7 @@ def whale_scan_job():
                 f"Reason: {verdict.get('reasoning','')[:150]}\n"
                 f"CRO flaws: {', '.join(cro.get('fatal_flaws',['none'])[:2])}"
             )
-            continue
+            return
 
         pos_id = str(uuid.uuid4())
 
@@ -176,6 +219,24 @@ def whale_scan_job():
         # committee's allocation and the Kelly-sized bet.
         my_prob   = float(verdict.get("my_probability", current_price) or current_price)
         recent    = get_recent_outcomes(limit=20)
+
+        # Calibrate the committee's stated probability against its own historical
+        # track record before it ever reaches Kelly. An overconfident `my_prob`
+        # makes Kelly over-bet; this shrinks it toward the market price, weighted
+        # by measured calibration and consensus strength, and caps the edge claim.
+        from risk.calibration import calibrate_probability
+        from db.models import get_calibration_samples
+        try:
+            cal = calibrate_probability(
+                my_prob         = my_prob,
+                market_price    = current_price,
+                samples         = get_calibration_samples(limit=500),
+                consensus_score = consensus.get("consensus_score", 0.0),
+            )
+            my_prob = cal["calibrated_prob"]
+        except Exception as e:
+            logger.error(f"calibration failed, using raw prob: {e}")
+
         kelly_size = kelly_bet(
             bankroll        = bankroll,
             my_prob         = my_prob,

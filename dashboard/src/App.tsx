@@ -1,13 +1,14 @@
 import React, { useState } from 'react'
-import { BarChart2, Zap, BrainCircuit, Activity, Grid3x3, Waves, GraduationCap } from 'lucide-react'
+import { BarChart2, Zap, BrainCircuit, Activity, Grid3x3, Waves, GraduationCap, FlaskConical } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import Positions from './pages/Positions'
 import Signals from './pages/Signals'
 import Committee from './pages/Committee'
 import Whales from './pages/Whales'
 import Lessons from './pages/Lessons'
+import Backtest from './pages/Backtest'
 
-type Page = 'dashboard' | 'positions' | 'signals' | 'committee' | 'whales' | 'lessons'
+type Page = 'dashboard' | 'positions' | 'signals' | 'committee' | 'whales' | 'lessons' | 'backtest'
 
 const NAV = [
   { id: 'dashboard',  label: 'Dashboard',  icon: BarChart2 },
@@ -16,6 +17,7 @@ const NAV = [
   { id: 'committee',  label: 'Committee',  icon: Grid3x3 },
   { id: 'whales',     label: 'Whales',     icon: Waves },
   { id: 'lessons',    label: 'Lessons',    icon: GraduationCap },
+  { id: 'backtest',   label: 'Backtest',   icon: FlaskConical },
 ]
 
 export default function App() {
@@ -82,6 +84,7 @@ export default function App() {
           {page === 'committee' && <Committee />}
           {page === 'whales'    && <Whales />}
           {page === 'lessons'   && <Lessons />}
+          {page === 'backtest'  && <Backtest />}
         </main>
       </div>
     </div>

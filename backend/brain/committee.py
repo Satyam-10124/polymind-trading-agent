@@ -13,7 +13,7 @@ Flow:
 import logging
 import requests
 from datetime import datetime, timezone
-from config import VIRTUALS_API_KEY, VIRTUALS_BASE_URL
+from config import VIRTUALS_API_KEY, VIRTUALS_BASE_URL, COMMITTEE_MODELS, MODEL_OPUS
 from brain.prompts import (
     WHALE_INTENT_SYSTEM, WHALE_INTENT_USER,
     EFFICIENCY_SYSTEM, EFFICIENCY_USER,
@@ -286,10 +286,10 @@ POST_MORTEM_TOOL = {
 
 # ── Core API caller ───────────────────────────────────────────
 
-def _call(system: str, user: str, tool: dict) -> dict | None:
+def _call(system: str, user: str, tool: dict, model: str | None = None) -> dict | None:
     import json
     payload = {
-        "model": "claude-opus-4-5",
+        "model": model or MODEL_OPUS,
         "max_tokens": 1024,
         "system": system,
         "messages": [{"role": "user", "content": user}],
@@ -354,7 +354,7 @@ def run_whale_intent(trade: dict, profile: dict) -> dict:
         category         = category,
         trade_age_seconds = trade.get("trade_age_seconds", 0),
     )
-    result = _call(WHALE_INTENT_SYSTEM, user, WHALE_INTENT_TOOL)
+    result = _call(WHALE_INTENT_SYSTEM, user, WHALE_INTENT_TOOL, COMMITTEE_MODELS["whale_intent"])
     return result or {"intent": "Unknown", "alpha_confidence": 40, "intent_score": 4, "reasoning": "API unavailable", "is_outlier": False}
 
 
@@ -369,7 +369,7 @@ def run_efficiency_audit(market: dict, current_price: float) -> dict:
         category       = market.get("category", "other"),
         days_to_expiry = market.get("days_to_expiry", 14),
     )
-    result = _call(EFFICIENCY_SYSTEM, user, EFFICIENCY_TOOL)
+    result = _call(EFFICIENCY_SYSTEM, user, EFFICIENCY_TOOL, COMMITTEE_MODELS["efficiency"])
     return result or {"efficiency_state": "Unknown", "efficiency_score": 5, "prob_base": current_price, "mispricing_confidence": 50, "edge_is_real": True, "reasoning": "API unavailable"}
 
 
@@ -380,7 +380,7 @@ def run_archetype(market: dict, current_price: float) -> dict:
         yes_price      = current_price * 100,
         days_to_expiry = market.get("days_to_expiry", 14),
     )
-    result = _call(ARCHETYPE_SYSTEM, user, ARCHETYPE_TOOL)
+    result = _call(ARCHETYPE_SYSTEM, user, ARCHETYPE_TOOL, COMMITTEE_MODELS["archetype"])
     return result or {"archetype": "Other", "info_decay_hours": 24, "recommended_max_hold_days": 14}
 
 
@@ -413,7 +413,7 @@ def run_cro(trade: dict, market: dict, current_price: float, analyst_score: int,
         open_positions_summary = pos_summary,
         reasoning      = reasoning,
     )
-    result = _call(CRO_SYSTEM, user, CRO_TOOL)
+    result = _call(CRO_SYSTEM, user, CRO_TOOL, COMMITTEE_MODELS["cro"])
     if not result:
         result = {
             "rejection_risk_pct": 50, "verdict": "CAUTION",
@@ -455,7 +455,7 @@ def run_portfolio_risk(trade: dict, market: dict, open_positions: list) -> dict:
         no_count           = no_count,
         avg_expiry         = avg_exp,
     )
-    result = _call(PORTFOLIO_RISK_SYSTEM, user, PORTFOLIO_RISK_TOOL)
+    result = _call(PORTFOLIO_RISK_SYSTEM, user, PORTFOLIO_RISK_TOOL, COMMITTEE_MODELS["portfolio"])
     return result or {"diversification_score": 5, "increases_fragility": False, "verdict": "Accept", "size_adjustment": 1.0, "reasoning": "API unavailable"}
 
 
@@ -478,7 +478,7 @@ def run_sizing(bankroll: float, my_prob: float, market_price: float,
         open_count          = open_count,
         correlated_exposure = correlated_exposure,
     )
-    result = _call(SIZING_SYSTEM, user, SIZING_TOOL)
+    result = _call(SIZING_SYSTEM, user, SIZING_TOOL, COMMITTEE_MODELS["sizing"])
     return result or {"kelly_fraction": 0.25, "allocation_pct": 2.5, "dollar_amount": bankroll * 0.025, "reasoning": "Default conservative sizing"}
 
 
@@ -516,8 +516,61 @@ def run_final_committee(trade: dict, market: dict, current_price: float,
         cro_summary           = f"Rejection prob: {cro.get('rejection_probability')}% | Verdict: {cro.get('verdict')} | Flaws: {'; '.join(cro.get('fatal_flaws',[])[:2])}",
         portfolio_summary     = f"Fragility: {'↑' if portfolio.get('increases_fragility') else '↓'} | Verdict: {portfolio.get('verdict')} | Size adj: {portfolio.get('size_adjustment',1):.1f}x",
     )
-    result = _call(COMMITTEE_SYSTEM, user, COMMITTEE_TOOL)
+    result = _call(COMMITTEE_SYSTEM, user, COMMITTEE_TOOL, COMMITTEE_MODELS["committee"])
     return result or {"verdict": "REJECT", "conviction": 0, "my_probability": current_price, "direction": "SKIP", "capital_allocation": 0, "reasoning": "Committee API unavailable"}
+
+
+# ── Stage-1 fan-out + archetype cache ─────────────────────────
+
+# Archetype barely varies for a given (category, archetype-of-question); cache it
+# so repeat markets in the same family skip the (Haiku) call entirely.
+_archetype_cache: dict[str, dict] = {}
+
+
+def _cached_archetype(market: dict, current_price: float) -> dict:
+    key = derive_event_key(market.get("question", ""), market.get("category", "other"))
+    if key in _archetype_cache:
+        return _archetype_cache[key]
+    result = run_archetype(market, current_price)
+    # Only cache real results, never the API-unavailable fallback.
+    if result and result.get("archetype") not in (None, "Other"):
+        _archetype_cache[key] = result
+    return result
+
+
+def _run_stage1(trade: dict, market: dict, current_price: float,
+                whale_profile: dict) -> tuple[dict, dict, dict]:
+    """
+    Run the three independent first-stage analysts. Concurrently when
+    COMMITTEE_PARALLEL is on (default), else sequentially. Each agent already
+    has its own try/except fallback, so a failure degrades to its fallback dict
+    rather than crashing the pool.
+    """
+    from config import COMMITTEE_PARALLEL
+    tasks = {
+        "whale_intent": lambda: run_whale_intent(trade, whale_profile),
+        "efficiency":   lambda: run_efficiency_audit(market, current_price),
+        "archetype":    lambda: _cached_archetype(market, current_price),
+    }
+    if not COMMITTEE_PARALLEL:
+        return tasks["whale_intent"](), tasks["efficiency"](), tasks["archetype"]()
+
+    from concurrent.futures import ThreadPoolExecutor
+    results: dict = {}
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = {k: ex.submit(fn) for k, fn in tasks.items()}
+        for k, fut in futures.items():
+            try:
+                results[k] = fut.result()
+            except Exception as e:
+                logger.error(f"Stage-1 agent {k} failed: {e}")
+                results[k] = None
+    # Apply the same fallbacks the sequential runners use if anything came back None.
+    return (
+        results.get("whale_intent") or {"intent": "Unknown", "alpha_confidence": 40, "intent_score": 4, "reasoning": "stage1 error", "is_outlier": False},
+        results.get("efficiency") or {"efficiency_state": "Unknown", "efficiency_score": 5, "prob_base": current_price, "mispricing_confidence": 50, "edge_is_real": True, "reasoning": "stage1 error"},
+        results.get("archetype") or {"archetype": "Other", "info_decay_hours": 24, "recommended_max_hold_days": 14},
+    )
 
 
 # ── Main entry point ──────────────────────────────────────────
@@ -551,19 +604,33 @@ def run_committee(trade: dict, market: dict, current_price: float,
         f"(consensus {consensus.get('whale_count',1)} whales, score {consensus_score:.2f})"
     )
 
-    # Agent 2: Whale Intent
-    logger.info("  [1/6] Whale intent analysis...")
-    whale_intent = run_whale_intent(trade, whale_profile)
+    # ── Gate 0: deterministic portfolio guardrails (FREE — run before any LLM) ──
+    # Cheapest possible early-exit: kill a structurally-doomed trade before we
+    # spend a single token on it.
+    hard = portfolio_hard_checks(trade, market, open_positions)
+    if hard.get("reject"):
+        logger.info(f"  PORTFOLIO HARD-REJECT (pre-LLM): {hard.get('reason')}")
+        return {
+            "verdict": "REJECT", "conviction": 0,
+            "direction": "SKIP", "capital_allocation": 0,
+            "my_probability": current_price,
+            "reasoning": f"Portfolio guardrail: {hard.get('reason')}",
+            "consensus_score": consensus_score,
+            "committee_reports": {
+                "portfolio": {"verdict": "Reject", "hard_checks": hard,
+                              "reasoning": hard.get("reason")},
+            },
+        }
 
-    # Agent 3: Market Efficiency
-    logger.info("  [2/6] Market efficiency audit...")
-    efficiency = run_efficiency_audit(market, current_price)
+    # ── Stage 1: the three independent analysts run concurrently ──
+    # Whale-intent, efficiency and archetype have no inter-dependencies, so we
+    # fan them out to cut decision latency (critical when racing a whale).
+    logger.info("  [1-3/6] Whale intent + efficiency + archetype (parallel)...")
+    whale_intent, efficiency, archetype_result = _run_stage1(
+        trade, market, current_price, whale_profile,
+    )
 
-    # Agent 4: Event Archetype
-    logger.info("  [3/6] Event archetype classification...")
-    archetype_result = run_archetype(market, current_price)
-
-    # Agent 5: CRO Red Team
+    # ── Stage 2: CRO Red Team (depends on intent + efficiency) ──
     logger.info("  [4/6] CRO adversarial review...")
     cro = run_cro(
         trade, market, current_price,
@@ -583,24 +650,6 @@ def run_committee(trade: dict, market: dict, current_price: float,
             "my_probability": current_price,
             "reasoning": f"CRO veto: {'; '.join(cro.get('fatal_flaws', [])[:2])}",
             "committee_reports": {"whale_intent": whale_intent, "efficiency": efficiency, "archetype": archetype_result, "cro": cro},
-        }
-
-    # Deterministic portfolio guardrails (run BEFORE the LLM agent).
-    hard = portfolio_hard_checks(trade, market, open_positions)
-    if hard.get("reject"):
-        logger.info(f"  PORTFOLIO HARD-REJECT: {hard.get('reason')}")
-        return {
-            "verdict": "REJECT", "conviction": 0,
-            "direction": "SKIP", "capital_allocation": 0,
-            "my_probability": current_price,
-            "reasoning": f"Portfolio guardrail: {hard.get('reason')}",
-            "consensus_score": consensus_score,
-            "committee_reports": {
-                "whale_intent": whale_intent, "efficiency": efficiency,
-                "archetype": archetype_result, "cro": cro,
-                "portfolio": {"verdict": "Reject", "hard_checks": hard,
-                              "reasoning": hard.get("reason")},
-            },
         }
 
     # Agent 7: Portfolio Risk (LLM)
@@ -687,5 +736,5 @@ def run_post_mortem(position: dict) -> dict:
         claude_score  = position.get("claude_score", 0),
         whale_username = position.get("whale_name", "Unknown"),
     )
-    result = _call(POST_MORTEM_SYSTEM, user, POST_MORTEM_TOOL)
+    result = _call(POST_MORTEM_SYSTEM, user, POST_MORTEM_TOOL, COMMITTEE_MODELS["post_mortem"])
     return result or {"edge_was_real": False, "thesis_correct": False, "lessons": ["API unavailable"], "future_rules": []}

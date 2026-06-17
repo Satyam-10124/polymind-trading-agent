@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from db.models import (
     init_db, get_stats, get_open_positions, get_all_positions,
     get_whale_profiles, get_committee_report, get_lessons, get_equity_curve,
-    get_conn,
+    get_conn, get_backtest_runs, get_calibration_samples,
 )
 from executor.clob_client import get_wallet_balance
 from config import PAPER_MODE, BANKROLL
@@ -129,3 +129,24 @@ def consensus(limit: int = 50):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+@app.get("/api/backtests")
+def backtests(limit: int = 20):
+    """Saved backtest runs with train/test (out-of-sample) metrics."""
+    return get_backtest_runs(limit=limit)
+
+
+@app.get("/api/calibration")
+def calibration():
+    """
+    Reliability curve: predicted vs realized win frequency per probability bucket,
+    plus the measured overconfidence factor. Answers 'do we trust our own prob?'
+    """
+    from risk.calibration import reliability_curve, overconfidence_factor
+    samples = get_calibration_samples(limit=500)
+    return {
+        "n_samples": len(samples),
+        "factor":    overconfidence_factor(samples),
+        "curve":     reliability_curve(samples),
+    }

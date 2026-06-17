@@ -103,6 +103,61 @@ def init_db():
         whales          TEXT,
         created_at      TEXT
     );
+    -- ── Backtest / historical data ────────────────────────────
+    -- Raw whale trades pulled from the data-api, used to replay the strategy.
+    CREATE TABLE IF NOT EXISTS historical_trades (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        trade_id      TEXT UNIQUE,
+        wallet        TEXT,
+        username      TEXT,
+        whale_pnl     REAL,
+        market_id     TEXT,
+        token_id      TEXT,
+        question      TEXT,
+        category      TEXT,
+        direction     TEXT,
+        price         REAL,
+        size          REAL,
+        ts            REAL,
+        created_at    TEXT
+    );
+    -- Price time-series per token (from Gamma prices-history).
+    CREATE TABLE IF NOT EXISTS market_prices (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_id      TEXT,
+        market_id     TEXT,
+        ts            REAL,
+        price         REAL,
+        UNIQUE(token_id, ts)
+    );
+    -- Final resolution per market for outcome scoring.
+    CREATE TABLE IF NOT EXISTS market_resolutions (
+        market_id     TEXT PRIMARY KEY,
+        question      TEXT,
+        resolved_outcome TEXT,
+        resolved_price   REAL,
+        resolved_ts      REAL,
+        created_at    TEXT
+    );
+    -- One row per backtest run with summary metrics + JSON config/results.
+    CREATE TABLE IF NOT EXISTS backtest_runs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        label         TEXT,
+        train_start   TEXT,
+        train_end     TEXT,
+        test_start    TEXT,
+        test_end      TEXT,
+        n_trades      INTEGER,
+        win_rate      REAL,
+        total_pnl     REAL,
+        roi           REAL,
+        sharpe        REAL,
+        max_drawdown  REAL,
+        avg_slippage  REAL,
+        config        TEXT,
+        results       TEXT,
+        created_at    TEXT
+    );
     """)
     conn.commit()
     conn.close()
@@ -535,3 +590,162 @@ def get_equity_curve(starting_bankroll: float = 50.0) -> list[dict]:
             "trades": r["trades"],
         })
     return points
+
+
+# ── Historical data (backtest) ────────────────────────────────
+
+def save_historical_trades(trades: list[dict]) -> int:
+    """Bulk-insert raw whale trades. Returns count of newly inserted rows."""
+    conn = get_conn()
+    n = 0
+    for t in trades:
+        try:
+            cur = conn.execute("""
+            INSERT OR IGNORE INTO historical_trades
+            (trade_id, wallet, username, whale_pnl, market_id, token_id, question,
+             category, direction, price, size, ts, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                t.get("trade_id"), t.get("wallet"), t.get("username"),
+                t.get("whale_pnl", 0), t.get("market_id"), t.get("token_id"),
+                t.get("question"), t.get("category", "other"), t.get("direction"),
+                t.get("price"), t.get("size"), t.get("ts"),
+                datetime.now(timezone.utc).isoformat(),
+            ))
+            n += cur.rowcount
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+    return n
+
+
+def get_historical_trades(start_ts: float | None = None, end_ts: float | None = None) -> list[dict]:
+    conn = get_conn()
+    q = "SELECT * FROM historical_trades"
+    params: list = []
+    clauses = []
+    if start_ts is not None:
+        clauses.append("ts >= ?"); params.append(start_ts)
+    if end_ts is not None:
+        clauses.append("ts <= ?"); params.append(end_ts)
+    if clauses:
+        q += " WHERE " + " AND ".join(clauses)
+    q += " ORDER BY ts ASC"
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def save_market_prices(token_id: str, market_id: str, points: list[dict]) -> int:
+    conn = get_conn()
+    n = 0
+    for p in points:
+        try:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO market_prices (token_id, market_id, ts, price) VALUES (?,?,?,?)",
+                (token_id, market_id, float(p["ts"]), float(p["price"])),
+            )
+            n += cur.rowcount
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+    return n
+
+
+def get_price_at(token_id: str, ts: float) -> float | None:
+    """Most recent recorded price for token at-or-before ts (point-in-time, no lookahead)."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT price FROM market_prices WHERE token_id=? AND ts<=? ORDER BY ts DESC LIMIT 1",
+        (token_id, ts),
+    ).fetchone()
+    conn.close()
+    return float(row["price"]) if row else None
+
+
+def save_market_resolution(res: dict):
+    conn = get_conn()
+    conn.execute("""
+    INSERT OR REPLACE INTO market_resolutions
+    (market_id, question, resolved_outcome, resolved_price, resolved_ts, created_at)
+    VALUES (?,?,?,?,?,?)
+    """, (
+        res.get("market_id"), res.get("question"), res.get("resolved_outcome"),
+        res.get("resolved_price"), res.get("resolved_ts"),
+        datetime.now(timezone.utc).isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_market_resolution(market_id: str) -> dict | None:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM market_resolutions WHERE market_id=?", (market_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def save_backtest_run(run: dict) -> int:
+    conn = get_conn()
+    cur = conn.execute("""
+    INSERT INTO backtest_runs
+    (label, train_start, train_end, test_start, test_end, n_trades, win_rate,
+     total_pnl, roi, sharpe, max_drawdown, avg_slippage, config, results, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        run.get("label"), run.get("train_start"), run.get("train_end"),
+        run.get("test_start"), run.get("test_end"), run.get("n_trades"),
+        run.get("win_rate"), run.get("total_pnl"), run.get("roi"),
+        run.get("sharpe"), run.get("max_drawdown"), run.get("avg_slippage"),
+        json.dumps(run.get("config", {})), json.dumps(run.get("results", {})),
+        datetime.now(timezone.utc).isoformat(),
+    ))
+    conn.commit()
+    run_id = cur.lastrowid
+    conn.close()
+    return run_id
+
+
+def get_backtest_runs(limit: int = 20) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM backtest_runs ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ("config", "results"):
+            try:
+                d[k] = json.loads(d.get(k) or "{}")
+            except Exception:
+                d[k] = {}
+        out.append(d)
+    return out
+
+
+# ── Calibration ───────────────────────────────────────────────
+
+def get_calibration_samples(limit: int = 500) -> list[dict]:
+    """
+    Pairs of (predicted probability, realized win) for closed positions.
+    Predicted prob = the sizing_decisions.my_prob logged at entry; realized win
+    = whether the position closed with pnl>0. Joined on position_id.
+    """
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT s.my_prob AS my_prob, p.pnl AS pnl, p.direction AS direction
+        FROM sizing_decisions s
+        JOIN positions p ON p.id = s.position_id
+        WHERE p.status='closed' AND s.my_prob IS NOT NULL
+        ORDER BY p.closed_at DESC LIMIT ?
+    """, (limit,)).fetchall()
+    conn.close()
+    return [
+        {"my_prob": float(r["my_prob"]), "win": 1 if float(r["pnl"] or 0) > 0 else 0}
+        for r in rows
+    ]

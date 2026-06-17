@@ -42,6 +42,47 @@ POSITION_CHECK_SECS  = int(os.getenv("POSITION_CHECK_SECONDS", "600"))
 DATA_API   = "https://data-api.polymarket.com"
 GAMMA_API  = "https://gamma-api.polymarket.com"
 CLOB_API   = "https://clob.polymarket.com"
+WS_URL     = os.getenv("CLOB_WS_URL", "wss://ws-subscriptions-clob.polymarket.com/ws")
 CHAIN_ID   = 137
 
 BLOCK_CATEGORIES = {"sports", "esports", "counter-strike", "football", "basketball", "tennis"}
+
+# ── Committee model cascade ───────────────────────────────────
+# Each agent runs on the cheapest tier that does its job well. CRO red-team and
+# the final committee vote (the adversarial / judgment calls) stay on Opus; the
+# structured-extraction agents drop to Sonnet; pure classification to Haiku.
+# Override any of these via env if the Virtuals API rejects a given model id.
+MODEL_OPUS    = os.getenv("MODEL_OPUS", "claude-opus-4-5")
+MODEL_SONNET  = os.getenv("MODEL_SONNET", "claude-sonnet-4-6")
+MODEL_HAIKU   = os.getenv("MODEL_HAIKU", "claude-haiku-4-5")
+
+COMMITTEE_MODELS = {
+    "whale_intent": os.getenv("MODEL_WHALE_INTENT", MODEL_SONNET),
+    "efficiency":   os.getenv("MODEL_EFFICIENCY",   MODEL_SONNET),
+    "archetype":    os.getenv("MODEL_ARCHETYPE",    MODEL_HAIKU),
+    "cro":          os.getenv("MODEL_CRO",          MODEL_OPUS),
+    "portfolio":    os.getenv("MODEL_PORTFOLIO",    MODEL_SONNET),
+    "sizing":       os.getenv("MODEL_SIZING",       MODEL_SONNET),
+    "committee":    os.getenv("MODEL_COMMITTEE",    MODEL_OPUS),
+    "post_mortem":  os.getenv("MODEL_POST_MORTEM",  MODEL_SONNET),
+}
+# Run the three independent first-stage agents concurrently to cut decision latency.
+COMMITTEE_PARALLEL = os.getenv("COMMITTEE_PARALLEL", "true").lower() == "true"
+
+# ── Real-time feed ────────────────────────────────────────────
+# When true, a WebSocket consumer pushes fresh whale trades event-driven and the
+# periodic polling scan only refreshes the whale (leaderboard) set. Falls back to
+# polling automatically if the socket can't connect.
+USE_WEBSOCKET        = os.getenv("USE_WEBSOCKET", "false").lower() == "true"
+WHALE_REFRESH_SECS   = int(os.getenv("WHALE_REFRESH_SECONDS", "300"))
+
+# ── Probability calibration ───────────────────────────────────
+# Shrink the committee's stated probability toward the market price, weighted by
+# its own historical calibration and the consensus strength, before Kelly sizing.
+CALIBRATION_ENABLED  = os.getenv("CALIBRATION_ENABLED", "true").lower() == "true"
+CALIBRATION_MIN_SAMPLES = int(os.getenv("CALIBRATION_MIN_SAMPLES", "20"))
+MAX_PROB_DEVIATION   = float(os.getenv("MAX_PROB_DEVIATION", "0.15"))  # cap edge claim
+
+# ── Backtest / execution realism ──────────────────────────────
+SLIPPAGE_BPS         = float(os.getenv("SLIPPAGE_BPS", "150"))   # modeled entry slippage
+FILL_SPREAD_BPS      = float(os.getenv("FILL_SPREAD_BPS", "100")) # half-spread paid on entry

@@ -31,16 +31,51 @@ backend/
     claude_agent.py    Legacy single-pass analyst + daily report (still used)
   risk/
     kelly.py           Enhanced dynamic-fraction Kelly + drawdown breaker
+    calibration.py     Shrinks committee prob toward market by measured calibration
     tp_sl_manager.py   Take-profit / stop-loss / time-stop checks
+  feed/                Data-source + execution abstraction (live vs backtest)
+    base.py            WhaleTradeEvent / DataFeed / Executor / Fill interfaces
+    live_feed.py       Real-time WS+REST hybrid whale detection (event-driven)
+    live_executor.py   Adapts clob_client to the Executor interface
+    replay_feed.py     DataFeed backed by historical SQLite (no lookahead)
+    sim_executor.py    Fills with modeled slippage for backtests
+    slippage.py        Execution-cost model (spread + size-scaled impact)
+  backtest/
+    ingest.py          Pull whale trades + price history + resolutions (public APIs)
+    engine.py          Walk-forward replay through the real committee + metrics
   executor/clob_client.py   Order placement (mock in paper mode)
   bot/telegram_bot.py  Commands + alerts
-  scheduler/jobs.py    The orchestration glue (scan → committee → execute → learn)
+  scheduler/jobs.py    Orchestration glue; whale_scan_job + process_whale_trade
 dashboard/src/
   App.tsx              Sidebar nav + page router (plain useState, no router lib)
   hooks/useApi.ts      Polling fetch hooks (all reads go through /api)
-  pages/               Dashboard, Positions, Signals, Committee, Whales, Lessons
+  pages/               Dashboard, Positions, Signals, Committee, Whales, Lessons, Backtest
   components/StatCard.tsx
 ```
+
+## Validation, cost & latency (added)
+
+- **Backtest before live.** Paper mode is not validation (the consensus buffer is
+  in-memory and resets). Run `python3 -m backtest.ingest` then
+  `python3 -m backtest.engine --split 0.7` for a time-ordered, out-of-sample
+  walk-forward over the *real* decision stack with modeled slippage. The decision
+  logic is decoupled from data source via `feed/` so the same code runs live and
+  in replay. `--committee` convenes the real LLM committee (slow/costly).
+- **Probability calibration.** The committee's `my_probability` is an LLM estimate;
+  Kelly is only optimal on a *true* prob. `risk/calibration.py` measures historical
+  over/under-confidence (predicted vs realized win rate) and shrinks the prob toward
+  the market price — weighted by that factor and consensus — capped at
+  `MAX_PROB_DEVIATION`, before `kelly_bet` in `jobs.py`.
+- **Model cascade.** `_call` in `committee.py` takes a per-agent model. Defaults
+  (`COMMITTEE_MODELS` in `config.py`): archetype→Haiku, intent/efficiency/portfolio/
+  sizing→Sonnet, CRO + final vote→Opus. The free deterministic `portfolio_hard_checks`
+  now runs FIRST (before any LLM spend), and the three independent stage-1 agents run
+  in parallel (`COMMITTEE_PARALLEL`). Archetype is cached by event_key.
+- **Real-time feed.** `USE_WEBSOCKET=true` runs `feed/live_feed.py`: a WS market-channel
+  consumer (price/trade prints on tracked tokens) + fast `/activity` attribution poll,
+  pushing fresh trades to `process_whale_trade` event-driven. Degrades to polling if
+  `websockets` is missing or the socket drops. NOTE: the public WS does not attribute
+  trades to wallets — attribution still needs the REST `/activity` call.
 
 ## The committee pipeline (the heart of the system)
 
@@ -66,9 +101,15 @@ Entry: `scheduler/jobs.py::whale_scan_job` (runs every `SCAN_INTERVAL_SECONDS`).
       LLM portfolio agent runs.
    6. Sizing (LLM) → `capital_allocation`, scaled by consensus.
    7. Final committee vote → verdict.
-5. **Sizing** — `risk/kelly.py::kelly_bet` recomputes size with a dynamic Kelly
-   fraction (from the last 20 outcomes) and a drawdown circuit breaker, logging the
-   full breakdown to `sizing_decisions`. Final bet = `min(committee_alloc, kelly)`.
+   Note: `portfolio_hard_checks()` now runs as the *first* gate inside
+   `run_committee` (before any LLM call), and the three independent stage-1 agents
+   (intent/efficiency/archetype) run in parallel. Each agent runs on a tiered model
+   (`COMMITTEE_MODELS`), not all Opus.
+5. **Calibrate + size** — the committee's `my_probability` is shrunk toward the
+   market by `risk/calibration.py` (using its own historical hit-rate), then
+   `risk/kelly.py::kelly_bet` recomputes size with a dynamic Kelly fraction (last 20
+   outcomes) + drawdown breaker, logged to `sizing_decisions`. Final bet =
+   `min(committee_alloc, kelly)`.
 6. **Execute + persist** — `place_order`, `save_position`, `save_committee_report`,
    `save_signal`.
 7. **Learn** — `post_mortem_job` (every 30 min) runs a post-mortem on each closed
@@ -79,7 +120,9 @@ Entry: `scheduler/jobs.py::whale_scan_job` (runs every `SCAN_INTERVAL_SECONDS`).
 ## Data model (SQLite, `backend/polymind.db`)
 
 `positions`, `signals`, `stats`, `post_mortems`, `committee_reports`,
-`whale_profiles`, `lessons_learned`, `sizing_decisions`, `consensus_events`.
+`whale_profiles`, `lessons_learned`, `sizing_decisions`, `consensus_events`,
+`historical_trades`, `market_prices`, `market_resolutions`, `backtest_runs`
+(the last four feed the backtest harness).
 
 Schema lives entirely in `db/models.py::init_db`. **New columns must go through
 `_run_migrations()` / `_safe_add_column`** — never assume a fresh DB, existing
