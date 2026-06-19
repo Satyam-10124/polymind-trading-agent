@@ -28,7 +28,7 @@ import asyncio
 import logging
 import threading
 
-from config import WS_URL, USE_WEBSOCKET, WHALE_REFRESH_SECS
+from config import WS_URL, USE_WEBSOCKET, WHALE_REFRESH_SECS, WS_DEBOUNCE_SECS
 from whale.monitor import (
     get_leaderboard, filter_whales, filter_whales_by_recency, scan_new_whale_trades,
 )
@@ -50,13 +50,16 @@ class LiveFeed:
     committee — event-driven instead of on a fixed 30s tick.
     """
 
-    def __init__(self, on_consensus_trade):
+    def __init__(self, on_consensus_trade, debounce_secs: float = WS_DEBOUNCE_SECS):
         self.on_consensus_trade = on_consensus_trade
         self._whales: list[dict] = []
         self._tracked_tokens: set[str] = set()
         self._last_whale_refresh = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Per-token debounce: token_id -> last dispatch ts (seconds).
+        self._debounce_secs = debounce_secs
+        self._last_dispatch: dict[str, float] = {}
 
     # ── lifecycle ──────────────────────────────────────────────
     def start(self):
@@ -151,6 +154,37 @@ class LiveFeed:
         except Exception as e:
             logger.error(f"WS subscribe failed: {e}")
 
+    @staticmethod
+    def _extract_tokens(events: list) -> set[str]:
+        """Token ids referenced by a batch of WS trade-print events."""
+        tokens = set()
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            tok = e.get("asset_id") or e.get("asset") or e.get("market")
+            if tok:
+                tokens.add(str(tok))
+        return tokens
+
+    def _should_dispatch(self, tokens, now: float) -> bool:
+        """
+        Per-token debounce. Returns True if ANY of `tokens` has not triggered a
+        dispatch within the last `_debounce_secs`, and marks those tokens as
+        dispatched at `now`. A busy token printing many trades per second thus
+        fires at most one /activity scan per debounce window.
+
+        With no token ids at all (some prints omit them) we cannot debounce by
+        token, so we fall back to a single global key to still rate-limit.
+        """
+        keys = tokens or {"__global__"}
+        fire = False
+        for k in keys:
+            last = self._last_dispatch.get(k, 0.0)
+            if now - last >= self._debounce_secs:
+                self._last_dispatch[k] = now
+                fire = True
+        return fire
+
     async def _handle_ws_message(self, ws, raw):
         """A trade print on a tracked token => attribute via a fast activity scan."""
         try:
@@ -162,7 +196,13 @@ class LiveFeed:
             (e.get("event_type") in ("last_trade_price", "trade") or e.get("type") == "trade")
             for e in events if isinstance(e, dict)
         )
-        if relevant:
-            # Offload the (blocking) REST attribution to a thread so we don't
-            # stall the socket read loop.
-            await asyncio.to_thread(self._scan_and_dispatch)
+        if not relevant:
+            return
+        # Debounce per token so a burst of prints on one market doesn't fire a
+        # blocking /activity scan on every message.
+        tokens = self._extract_tokens(events)
+        if not self._should_dispatch(tokens, time.time()):
+            return
+        # Offload the (blocking) REST attribution to a thread so we don't
+        # stall the socket read loop.
+        await asyncio.to_thread(self._scan_and_dispatch)

@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 
-const BASE = '/api'
+// In dev, Vite proxies /api to the backend. In prod the dashboard is often
+// served from a different origin than the API, where '/api' 404s — so allow an
+// override via VITE_API_BASE (e.g. https://api.example.com/api), falling back
+// to '/api' for the proxied dev/same-origin case.
+const BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
 export function useStatus() {
   const [data, setData] = useState<any>(null)

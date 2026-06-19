@@ -3,7 +3,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BANKROLL, MIN_CLAUDE_SCORE
+from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BANKROLL, MIN_CLAUDE_SCORE, BANKROLL
 from risk.kelly import kelly_bet
 from whale.monitor import (
     get_leaderboard, filter_whales, filter_whales_by_recency,
@@ -375,7 +375,7 @@ def daily_report_job():
     stats  = get_stats()
     trades = get_all_positions(limit=20)
     report = generate_daily_report(
-        {"start_bankroll": 50, "current_bankroll": get_wallet_balance(),
+        {"start_bankroll": BANKROLL, "current_bankroll": get_wallet_balance(),
          "daily_pnl": stats["total_pnl"], "trades_count": stats["total_trades"],
          "win_rate": stats["win_rate"]},
         trades,

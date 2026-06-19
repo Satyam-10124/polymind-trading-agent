@@ -87,6 +87,10 @@ COMMITTEE_PARALLEL = os.getenv("COMMITTEE_PARALLEL", "true").lower() == "true"
 # polling automatically if the socket can't connect.
 USE_WEBSOCKET        = os.getenv("USE_WEBSOCKET", "false").lower() == "true"
 WHALE_REFRESH_SECS   = int(os.getenv("WHALE_REFRESH_SECONDS", "300"))
+# Per-token debounce: a busy token can print many trades per second; don't fire a
+# (blocking, rate-limited) /activity attribution scan more than once per token per
+# this many seconds.
+WS_DEBOUNCE_SECS     = float(os.getenv("WS_DEBOUNCE_SECONDS", "5"))
 
 # ── Probability calibration ───────────────────────────────────
 # Shrink the committee's stated probability toward the market price, weighted by
