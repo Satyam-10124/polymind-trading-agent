@@ -14,6 +14,7 @@ Profiles are cached in-memory and persisted to SQLite via db.save_whale_profile.
 import logging
 import requests
 from config import DATA_API
+from whale.monitor import normalize_ts
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +60,7 @@ def _ts_of(trade: dict) -> float | None:
             return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
         except Exception:
             return None
-    try:
-        return float(ts)
-    except Exception:
-        return None
+    return normalize_ts(ts)
 
 
 def build_profile(wallet: str, username: str = "", pnl: float = 0) -> dict:

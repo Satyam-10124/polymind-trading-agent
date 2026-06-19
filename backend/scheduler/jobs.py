@@ -7,6 +7,7 @@ from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BA
 from risk.kelly import kelly_bet
 from whale.monitor import (
     get_leaderboard, filter_whales, scan_new_whale_trades, compute_consensus,
+    normalize_ts,
 )
 from whale.profiler import build_profile, get_size_multiplier
 from brain.committee import run_committee, run_post_mortem, derive_event_key, _resolve_day
@@ -145,7 +146,10 @@ def process_whale_trade(trade: dict, open_pos: list | None = None,
         trade["question"]    = question
         trade["category"]    = market.get("category", "other")
         trade["whale_size"]  = float(trade.get("usdcSize") or trade.get("amount") or 0)
-        trade["trade_age_seconds"] = int(time.time() - float(trade.get("timestamp") or time.time()))
+        trade_ts = normalize_ts(trade.get("timestamp"))
+        if trade_ts is None:
+            trade_ts = time.time()
+        trade["trade_age_seconds"] = int(time.time() - trade_ts)
 
         # ── Multi-whale consensus filter ──
         # Only convene the (expensive) committee when CONSENSUS_MIN_WHALES

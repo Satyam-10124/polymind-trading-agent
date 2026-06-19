@@ -19,7 +19,7 @@ import requests
 from datetime import datetime, timezone
 
 from config import DATA_API, GAMMA_API, CLOB_API
-from whale.monitor import get_leaderboard, filter_whales, is_copyable_trade, normalize_direction
+from whale.monitor import get_leaderboard, filter_whales, is_copyable_trade, normalize_direction, normalize_ts
 from whale.profiler import _bucket_category
 from db.models import (
     init_db, save_historical_trades, save_market_prices, save_market_resolution,
@@ -33,7 +33,7 @@ def _ts(v) -> float | None:
     if v is None:
         return None
     if isinstance(v, (int, float)):
-        return float(v)
+        return normalize_ts(v)
     try:
         return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
     except Exception:

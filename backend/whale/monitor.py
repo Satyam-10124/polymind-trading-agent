@@ -85,6 +85,25 @@ def get_whale_positions(wallet: str) -> list[dict]:
         return []
 
 
+def normalize_ts(ts) -> float | None:
+    """
+    Normalize a numeric epoch timestamp to SECONDS.
+
+    Polymarket / blockchain data-api endpoints sometimes return timestamps in
+    milliseconds. We auto-detect: anything > 1e12 is treated as milliseconds and
+    divided by 1000. (1e12 cleanly separates the two — epoch seconds are ~1.7e9,
+    epoch milliseconds ~1.7e12.) Returns None for non-numeric input; ISO date
+    strings should be parsed by the caller before reaching here.
+    """
+    try:
+        t = float(ts)
+    except (TypeError, ValueError):
+        return None
+    if t > 1e12:
+        t /= 1000.0
+    return t
+
+
 def is_trade_fresh(trade: dict) -> bool:
     ts = trade.get("timestamp") or trade.get("createdAt") or trade.get("time")
     if not ts:
@@ -97,7 +116,10 @@ def is_trade_fresh(trade: dict) -> bool:
         except Exception:
             return False
     else:
-        age = time.time() - float(ts)
+        norm = normalize_ts(ts)
+        if norm is None:
+            return False
+        age = time.time() - norm
     return age < COPY_MAX_DELAY_SECS
 
 
