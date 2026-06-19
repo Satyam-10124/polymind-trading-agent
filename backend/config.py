@@ -23,7 +23,11 @@ MIN_CLAUDE_SCORE     = int(os.getenv("MIN_CLAUDE_SCORE", "7"))
 MAX_OPEN_POSITIONS   = int(os.getenv("MAX_OPEN_POSITIONS", "8"))
 
 WHALE_MIN_PNL        = float(os.getenv("WHALE_MIN_PNL", "10000"))
-WHALE_MIN_WIN_RATE   = float(os.getenv("WHALE_MIN_WIN_RATE", "0.70"))
+# Profit margin per dollar traded (pnl / vol) — a coarse "this trader actually
+# makes money" gate at leaderboard time. NOT a win rate: the leaderboard only
+# exposes pnl and vol, never win/loss counts. The real win rate is computed
+# downstream from trade history in whale/profiler.py when a whale actually trades.
+WHALE_MIN_PNL_MARGIN = float(os.getenv("WHALE_MIN_PNL_MARGIN", "0.05"))
 COPY_MAX_DELAY_SECS  = int(os.getenv("COPY_MAX_DELAY_SECONDS", "300"))
 
 # Multi-whale consensus filter

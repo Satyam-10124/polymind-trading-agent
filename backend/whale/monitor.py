@@ -3,7 +3,7 @@ import time
 import logging
 from typing import Optional
 from config import (
-    DATA_API, WHALE_MIN_PNL, WHALE_MIN_WIN_RATE, COPY_MAX_DELAY_SECS,
+    DATA_API, WHALE_MIN_PNL, WHALE_MIN_PNL_MARGIN, COPY_MAX_DELAY_SECS,
     BLOCK_CATEGORIES, CONSENSUS_MIN_WHALES, CONSENSUS_WINDOW_SECS,
 )
 
@@ -31,16 +31,25 @@ def get_leaderboard(limit: int = 30) -> list[dict]:
 
 
 def filter_whales(leaderboard: list[dict]) -> list[dict]:
+    """
+    Coarse leaderboard pre-filter. Keeps traders with enough all-time PnL and a
+    healthy profit margin per dollar traded (pnl / vol).
+
+    `pnl_margin` is NOT a win rate — the leaderboard only exposes pnl and vol, not
+    win/loss counts. It's a "does this trader actually make money" gate. The real
+    per-wallet / per-category win rate is computed downstream from trade history
+    in whale/profiler.py once a whale produces a trade worth evaluating.
+    """
     qualified = []
     for trader in leaderboard:
         pnl = trader.get("pnl", 0)
         vol = trader.get("vol", 0)
         if pnl < WHALE_MIN_PNL:
             continue
-        win_rate = pnl / vol if vol > 0 else 0
-        if win_rate < WHALE_MIN_WIN_RATE and pnl < 50000:
+        pnl_margin = pnl / vol if vol > 0 else 0
+        if pnl_margin < WHALE_MIN_PNL_MARGIN and pnl < 50000:
             continue
-        trader["estimated_win_rate"] = round(win_rate, 3)
+        trader["pnl_margin"] = round(pnl_margin, 3)
         qualified.append(trader)
     return qualified
 
@@ -261,7 +270,7 @@ def scan_new_whale_trades(whales: list[dict]) -> list[dict]:
             trade["whale_wallet"]    = wallet
             trade["whale_username"]  = whale.get("userName", wallet[:8])
             trade["whale_pnl"]       = whale.get("pnl", 0)
-            trade["whale_win_rate"]  = whale.get("estimated_win_rate", 0)
+            trade["whale_pnl_margin"] = whale.get("pnl_margin", 0)
             trade["direction"]       = direction
 
             # Feed the rolling consensus buffer.

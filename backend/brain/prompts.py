@@ -36,7 +36,7 @@ Current YES price: {yes_price:.2f}¢ (implied prob: {yes_price:.1f}%)
 Category: {category}
 Volume: ${volume:,.0f} | Days to expiry: {days_to_expiry}
 
-Whale signal: {whale_username} (all-time PnL: ${whale_pnl:,.0f}, approx win rate: {whale_win_rate:.0%})
+Whale signal: {whale_username} (all-time PnL: ${whale_pnl:,.0f}, profit margin: {whale_pnl_margin:.0%} of volume)
 Whale bet: {direction} @ {entry_price:.2f}¢ | Size: ${whale_size:,.2f}
 
 Whale Intent Report: {whale_intent_summary}
@@ -72,7 +72,7 @@ WHALE_INTENT_USER = """
 WHALE PROFILE
 Username: {whale_username}
 All-time PnL: ${whale_pnl:,.0f}
-Estimated win rate: {whale_win_rate:.0%}
+Profit margin (pnl/volume): {whale_pnl_margin:.0%}
 Typical categories: {typical_categories}
 Average bet size: ${avg_bet_size:.2f}
 Recent win streak: {recent_streak}
