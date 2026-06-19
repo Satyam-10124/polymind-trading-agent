@@ -56,7 +56,7 @@ def kelly_bet(bankroll: float, my_prob: float, market_price: float,
         return 0.0
 
     odds      = (1 - market_price) / market_price
-    raw_kelly = edge / (1 / odds)
+    raw_kelly = edge / (1 - market_price)
 
     recent_outcomes = recent_outcomes or []
     frac, win_rate  = dynamic_kelly_fraction(recent_outcomes)
