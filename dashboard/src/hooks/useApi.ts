@@ -6,13 +6,24 @@ import { useState, useEffect, useCallback } from 'react'
 // to '/api' for the proxied dev/same-origin case.
 const BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
+// Optional bearer token; sent when the backend has API_TOKEN set. Left unset for
+// local dev (where the API skips auth).
+const API_TOKEN = import.meta.env.VITE_API_TOKEN
+
+/** fetch wrapper that attaches the bearer token when configured. */
+function apiFetch(path: string) {
+  const headers: Record<string, string> = {}
+  if (API_TOKEN) headers['Authorization'] = `Bearer ${API_TOKEN}`
+  return fetch(`${BASE}${path}`, { headers })
+}
+
 export function useStatus() {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
   const fetch_ = useCallback(async () => {
     try {
-      const r = await fetch(`${BASE}/status`)
+      const r = await apiFetch('/status')
       setData(await r.json())
     } catch { /* ignore */ }
     finally { setLoading(false) }
@@ -33,7 +44,7 @@ export function usePositions(status = 'open') {
 
   const fetch_ = useCallback(async () => {
     try {
-      const r = await fetch(`${BASE}/positions?status=${status}`)
+      const r = await apiFetch(`/positions?status=${status}`)
       setData(await r.json())
     } catch { setData([]) }
     finally { setLoading(false) }
@@ -53,7 +64,7 @@ export function useHistory() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch(`${BASE}/history?limit=50`)
+    apiFetch('/history?limit=50')
       .then(r => r.json())
       .then(setData)
       .catch(() => setData([]))
@@ -68,7 +79,7 @@ export function useSignals() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch(`${BASE}/signals`)
+    apiFetch('/signals')
       .then(r => r.json())
       .then(setData)
       .catch(() => setData([]))
@@ -85,7 +96,7 @@ function usePoll<T>(path: string, fallback: T, intervalMs = 20000) {
 
   const fetch_ = useCallback(async () => {
     try {
-      const r = await fetch(`${BASE}${path}`)
+      const r = await apiFetch(path)
       setData(await r.json())
     } catch { /* keep previous */ }
     finally { setLoading(false) }

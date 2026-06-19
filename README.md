@@ -199,6 +199,8 @@ All values live in `backend/.env`:
 | `WHALE_MIN_PNL` | `10000` | Minimum whale all-time PnL to track |
 | `SCAN_INTERVAL_SECONDS` | `30` | How often to scan whale activity |
 | `MAX_OPEN_POSITIONS` | `8` | Portfolio concentration limit |
+| `API_TOKEN` | _(unset)_ | Bearer token for the dashboard API. Unset = auth disabled (local dev only). |
+| `DASHBOARD_ORIGINS` | `http://localhost:5173` | Comma-separated CORS allow-list for the API. |
 
 ---
 
@@ -253,6 +255,23 @@ This system generates revenue through five compounding streams:
 - Default `PAPER_MODE=true` — cannot accidentally spend real money
 - All API calls use HTTPS
 - No external services required beyond Polymarket public APIs + Virtuals
+
+### Dashboard API auth
+
+The FastAPI dashboard API is read-only, but it exposes positions, whale
+profiles, and committee reasoning, so it should not be world-open in production.
+
+- **Bearer token:** set `API_TOKEN` in `backend/.env`. Every route except
+  `/api/status` (a public health check) then requires
+  `Authorization: Bearer <API_TOKEN>`. The dashboard sends it when its own
+  `VITE_API_TOKEN` is set (see `dashboard/.env.example`).
+- **Auth is opt-in for local dev:** if `API_TOKEN` is unset, auth is skipped and
+  a warning is logged at startup. **Always set it for any non-local deployment.**
+- **CORS** is restricted to `DASHBOARD_ORIGINS` (comma-separated; default
+  `http://localhost:5173`), not `*`.
+- Note: `VITE_API_TOKEN` is inlined into the built dashboard JS, so it gates
+  casual access rather than being a true client secret. For a hard security
+  boundary, put the API behind an authenticating reverse proxy.
 
 ---
 

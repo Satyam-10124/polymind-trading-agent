@@ -102,3 +102,14 @@ MAX_PROB_DEVIATION   = float(os.getenv("MAX_PROB_DEVIATION", "0.15"))  # cap edg
 # ── Backtest / execution realism ──────────────────────────────
 SLIPPAGE_BPS         = float(os.getenv("SLIPPAGE_BPS", "150"))   # modeled entry slippage
 FILL_SPREAD_BPS      = float(os.getenv("FILL_SPREAD_BPS", "100")) # half-spread paid on entry
+
+# ── Dashboard API security ────────────────────────────────────
+# Bearer token required by every API route except /api/status. If unset, auth is
+# SKIPPED (a startup warning is logged) so local dev works out of the box — set
+# it for any non-localhost deployment. CORS is locked to DASHBOARD_ORIGINS
+# (comma-separated), defaulting to the Vite dev server.
+API_TOKEN          = os.getenv("API_TOKEN")
+DASHBOARD_ORIGINS  = [
+    o.strip() for o in os.getenv("DASHBOARD_ORIGINS", "http://localhost:5173").split(",")
+    if o.strip()
+]
