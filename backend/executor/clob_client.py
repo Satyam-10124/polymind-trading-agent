@@ -1,5 +1,5 @@
 import logging
-from config import PRIVATE_KEY, WALLET_ADDRESS, CHAIN_ID, CLOB_API, PAPER_MODE
+from config import PRIVATE_KEY, WALLET_ADDRESS, CHAIN_ID, CLOB_API, PAPER_MODE, SLIPPAGE_BPS
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,16 @@ def get_client():
     if _client is None:
         _client = _get_client()
     return _client
+
+
+def sell_limit_price(current_price: float) -> float:
+    """
+    Limit price for an exit SELL: market price reduced by SLIPPAGE_BPS so the
+    order crosses and fills, expressed in basis points rather than a flat ±$0.01
+    (which is 2% of a 50¢ market but 10% of a 10¢ one). Floored at the CLOB
+    minimum tick (0.01).
+    """
+    return max(round(current_price * (1 - SLIPPAGE_BPS / 10_000), 4), 0.01)
 
 
 def place_order(token_id: str, side: str, size: float, price: float) -> dict:
@@ -104,7 +114,7 @@ def sell_position(token_id: str, shares: float, current_price: float) -> dict:
         from py_clob_client.clob_types import SELL
         order_args = OrderArgs(
             token_id = token_id,
-            price    = max(current_price - 0.01, 0.01),
+            price    = sell_limit_price(current_price),
             size     = shares,
             side     = SELL,
         )
