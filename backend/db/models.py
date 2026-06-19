@@ -9,6 +9,14 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "polymind.db")
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # Tune every connection for concurrent writers (scheduler + telegram +
+    # FastAPI all open their own connections per call):
+    #   WAL          — readers don't block writers and vice versa.
+    #   NORMAL       — durable under WAL, far cheaper than FULL fsync-per-commit.
+    #   busy_timeout — wait up to 5s for a lock instead of erroring immediately.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
