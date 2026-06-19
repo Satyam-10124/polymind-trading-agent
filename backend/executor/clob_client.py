@@ -63,7 +63,11 @@ def place_order(token_id: str, side: str, size: float, price: float) -> dict:
 
     try:
         from py_clob_client.clob_types import BUY, SELL
-        clob_side = BUY if side.upper() == "YES" else SELL
+        # Entering a position is always a BUY on the outcome's own token_id.
+        # jobs.py already selects the correct token_id for YES vs NO, so a NO
+        # entry is a BUY on the NO token — NOT a SELL on the YES token. (SELL is
+        # only for exits, handled in sell_position.) See docs/polymarket-buy-sell.md.
+        clob_side = BUY
         order_args = OrderArgs(
             token_id  = token_id,
             price     = price,
