@@ -18,8 +18,8 @@ import argparse
 import requests
 from datetime import datetime, timezone
 
-from config import DATA_API, GAMMA_API
-from whale.monitor import get_leaderboard, filter_whales
+from config import DATA_API, GAMMA_API, CLOB_API
+from whale.monitor import get_leaderboard, filter_whales, is_copyable_trade, normalize_direction
 from whale.profiler import _bucket_category
 from db.models import (
     init_db, save_historical_trades, save_market_prices, save_market_resolution,
@@ -53,6 +53,13 @@ def fetch_wallet_trades(wallet: str, username: str, whale_pnl: float, limit: int
 
     out = []
     for t in data:
+        # Same copyability + direction normalization as the live path, so the
+        # backtest replays exactly what the live agent would have acted on.
+        if not is_copyable_trade(t):
+            continue
+        direction = normalize_direction(t)
+        if direction is None:
+            continue
         ts = _ts(t.get("timestamp") or t.get("createdAt") or t.get("time"))
         if ts is None:
             continue
@@ -69,7 +76,7 @@ def fetch_wallet_trades(wallet: str, username: str, whale_pnl: float, limit: int
             "token_id":  t.get("asset") or t.get("tokenId"),
             "question":  question,
             "category":  _bucket_category(t.get("category") or t.get("market", {}).get("category", "")),
-            "direction": (t.get("side") or t.get("outcome") or "YES").upper(),
+            "direction": direction,
             "price":     float(t.get("price") or 0.5),
             "size":      float(t.get("usdcSize") or t.get("amount") or 0),
             "ts":        ts,
@@ -81,8 +88,10 @@ def fetch_price_history(token_id: str, market_id: str) -> int:
     if not token_id:
         return 0
     try:
+        # NOTE: prices-history lives on the CLOB host, not Gamma. Verified against
+        # the live API (Gamma returns 404 for this path).
         r = requests.get(
-            f"{GAMMA_API}/prices-history",
+            f"{CLOB_API}/prices-history",
             params={"market": token_id, "interval": "max", "fidelity": 60},
             timeout=20,
         )
@@ -97,37 +106,42 @@ def fetch_price_history(token_id: str, market_id: str) -> int:
 
 
 def fetch_resolution(market_id: str) -> bool:
+    """
+    Authoritative resolution via the CLOB markets endpoint, which is keyed
+    directly by condition_id (the Gamma /markets?conditionId filter is unreliable
+    — it ignores the filter and returns arbitrary markets). The CLOB response
+    carries per-token `winner` flags and settlement `price`.
+    """
     try:
-        r = requests.get(f"{GAMMA_API}/markets", params={"conditionId": market_id}, timeout=15)
-        data = r.json() if r.ok else []
+        r = requests.get(f"{CLOB_API}/markets/{market_id}", timeout=15)
+        if not r.ok:
+            return False
+        m = r.json()
     except Exception as e:
         logger.error(f"resolution {market_id[:10]}: {e}")
         return False
-    if not (data and isinstance(data, list)):
+    if not isinstance(m, dict) or not m.get("closed"):
         return False
-    m = data[0]
-    if not m.get("closed"):
-        return False
-    # Outcome prices: index 0 = YES. Resolved market settles to ~1/0.
-    outcome_prices = m.get("outcomePrices") or m.get("outcome_prices")
+
+    # Find the YES token; its settlement price (1=YES won, 0=NO won) is resolved_price.
+    tokens = m.get("tokens") or []
     resolved_price = None
-    if isinstance(outcome_prices, str):
-        import json
-        try:
-            outcome_prices = json.loads(outcome_prices)
-        except Exception:
-            outcome_prices = None
-    if isinstance(outcome_prices, list) and outcome_prices:
-        try:
-            resolved_price = float(outcome_prices[0])
-        except Exception:
-            resolved_price = None
+    for tok in tokens:
+        if str(tok.get("outcome", "")).strip().lower() == "yes":
+            try:
+                resolved_price = float(tok.get("price"))
+            except (TypeError, ValueError):
+                resolved_price = 1.0 if tok.get("winner") else 0.0
+            break
+    if resolved_price is None:
+        return False
+
     save_market_resolution({
         "market_id":        market_id,
         "question":         m.get("question", ""),
-        "resolved_outcome": "YES" if (resolved_price or 0) >= 0.5 else "NO",
+        "resolved_outcome": "YES" if resolved_price >= 0.5 else "NO",
         "resolved_price":   resolved_price,
-        "resolved_ts":      _ts(m.get("endDate") or m.get("endDateIso")),
+        "resolved_ts":      _ts(m.get("end_date_iso") or m.get("endDate")),
     })
     return True
 
@@ -138,7 +152,11 @@ def run(n_whales: int = 30):
     whales = filter_whales(leaderboard)
     logger.info(f"Ingesting history for {len(whales)} whales...")
 
-    all_markets: dict[str, str] = {}  # market_id -> token_id
+    # Collect every distinct (token, market) actually traded — both YES and NO
+    # tokens of a market may be traded by different whales, and each needs its own
+    # price history for no-lookahead replay.
+    token_market: dict[str, str] = {}  # token_id -> market_id
+    markets: set[str] = set()
     total_trades = 0
     for w in whales:
         wallet = w.get("proxyWallet")
@@ -147,18 +165,24 @@ def run(n_whales: int = 30):
         trades = fetch_wallet_trades(wallet, w.get("userName", wallet[:8]), w.get("pnl", 0))
         total_trades += save_historical_trades(trades)
         for t in trades:
-            if t["market_id"] and t["market_id"] not in all_markets:
-                all_markets[t["market_id"]] = t["token_id"]
+            if t["token_id"]:
+                token_market[t["token_id"]] = t["market_id"]
+            if t["market_id"]:
+                markets.add(t["market_id"])
         time.sleep(0.2)  # be polite to the API
 
-    logger.info(f"Saved {total_trades} new trades across {len(all_markets)} markets")
+    logger.info(f"Saved {total_trades} new trades across {len(markets)} markets, {len(token_market)} tokens")
 
-    n_prices, n_resolved = 0, 0
-    for market_id, token_id in all_markets.items():
+    n_prices = 0
+    for token_id, market_id in token_market.items():
         n_prices += fetch_price_history(token_id, market_id)
+        time.sleep(0.1)
+
+    n_resolved = 0
+    for market_id in markets:
         if fetch_resolution(market_id):
             n_resolved += 1
-        time.sleep(0.15)
+        time.sleep(0.1)
 
     logger.info(f"Ingest complete: {total_trades} trades, {n_prices} price points, {n_resolved} resolutions")
 

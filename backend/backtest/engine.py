@@ -43,10 +43,15 @@ def _reset_consensus_buffer():
 
 def _outcome_pnl(direction: str, entry_price: float, shares: float,
                  resolved_price: float) -> float:
-    """PnL if held to resolution. YES settles at resolved_price (~1 or 0)."""
-    exit_price = resolved_price if direction == "YES" else (1.0 - resolved_price)
-    entry = entry_price if direction == "YES" else (1.0 - entry_price)
-    return (exit_price - entry) * shares
+    """
+    PnL if held to resolution. We hold the token matching `direction`, bought at
+    `entry_price` (that token's own price). Binary YES/NO tokens sum to 1 at
+    settlement, so the held token settles to:
+        YES -> resolved_price        (outcomePrices[0]; 1 if YES won)
+        NO  -> 1 - resolved_price    (outcomePrices[1]; 1 if NO won)
+    """
+    settle = resolved_price if direction == "YES" else (1.0 - resolved_price)
+    return (settle - entry_price) * shares
 
 
 def simulate(start_ts: float | None, end_ts: float | None,
@@ -64,7 +69,13 @@ def simulate(start_ts: float | None, end_ts: float | None,
     equity_curve: list[float] = []
     slippages: list[float] = []
 
+    skip = {"blocked": 0, "consensus_reached": 0, "no_price": 0, "unresolved": 0}
     for ev in feed.events():
+        # Apply the same category block the live agent uses, so replay matches
+        # what would actually have been traded.
+        if monitor.is_blocked_category(ev.question, ev.category):
+            skip["blocked"] += 1
+            continue
         # Replay into the consensus buffer exactly as live ingestion would.
         monitor.record_bet(ev.market_id, ev.direction, ev.wallet, ev.username,
                             ev.whale_pnl, ts=ev.ts)
@@ -76,14 +87,17 @@ def simulate(start_ts: float | None, end_ts: float | None,
         if key in processed:
             continue
         processed.add(key)
+        skip["consensus_reached"] += 1
 
         # Point-in-time entry price (no lookahead).
         price = feed.price_at(ev.token_id, ev.ts) or ev.price
         if price <= 0 or price >= 1:
+            skip["no_price"] += 1
             continue
 
         resolution = get_market_resolution(ev.market_id)
         if not resolution or resolution.get("resolved_price") is None:
+            skip["unresolved"] += 1
             continue  # can't score an unresolved market
 
         # Edge estimate. With the committee this would be the calibrated prob;
@@ -121,7 +135,16 @@ def simulate(start_ts: float | None, end_ts: float | None,
             "ts": ev.ts,
         })
 
-    return _metrics(positions, equity_curve, bankroll, slippages)
+    logger.info(
+        f"Replay funnel: {skip['blocked']} blocked (sports/etc), "
+        f"{skip['consensus_reached']} reached consensus, "
+        f"{skip['no_price']} skipped (no price), "
+        f"{skip['unresolved']} skipped (unresolved), "
+        f"{len(positions)} scored."
+    )
+    m = _metrics(positions, equity_curve, bankroll, slippages)
+    m["funnel"] = skip
+    return m
 
 
 def _committee_prob(ev, price: float, consensus: dict) -> float:

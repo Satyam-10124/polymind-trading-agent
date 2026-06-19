@@ -90,9 +90,70 @@ def is_trade_fresh(trade: dict) -> bool:
     return age < COPY_MAX_DELAY_SECS
 
 
-def is_blocked_category(market_question: str) -> bool:
-    q = market_question.lower()
-    return any(cat in q for cat in BLOCK_CATEGORIES)
+# Sports markets often carry no explicit "sports" keyword in the question text
+# (e.g. "Will Canada win on 2026-06-18?", "Switzerland vs. Bosnia: O/U 2.5").
+# These structural patterns catch the common game/match phrasings.
+import re as _re
+_SPORTS_PATTERNS = [
+    _re.compile(r"\bvs\.?\b"),                       # "Team A vs. Team B"
+    _re.compile(r"\bo/u\b|\bover/under\b"),          # totals
+    _re.compile(r"\bwill .+ win on \d{4}-\d{2}-\d{2}"),  # daily game winners
+    _re.compile(r"\bspread:?\b"),                    # point spreads
+    _re.compile(r"\b\(-?\d+(\.\d+)?\)\b"),           # "(-1.5)" handicap lines
+    _re.compile(r"\bexact score\b|\bto score\b|\bmoneyline\b"),
+]
+
+
+def is_blocked_category(market_question: str, category: str | None = None) -> bool:
+    """
+    True if the market should be skipped. Checks both the explicit category/tag
+    (when available from Gamma) and structural sports phrasings in the question,
+    since the data-api activity feed rarely tags the category.
+    """
+    q = (market_question or "").lower()
+    if category and any(cat in category.lower() for cat in BLOCK_CATEGORIES):
+        return True
+    if any(cat in q for cat in BLOCK_CATEGORIES):
+        return True
+    return any(p.search(q) for p in _SPORTS_PATTERNS)
+
+
+def normalize_direction(trade: dict) -> str | None:
+    """
+    Map a Polymarket activity record to a YES/NO direction for consensus + token
+    selection, using the canonical `outcomeIndex` (0 -> YES/first token,
+    1 -> NO/second token). Falls back to the `outcome` text for binary markets.
+
+    The data-api `side` field is BUY/SELL (enter vs exit), NOT the outcome — using
+    it as direction was a bug that copied trades onto the wrong token. Returns None
+    if direction can't be determined.
+    """
+    idx = trade.get("outcomeIndex")
+    try:
+        idx = int(idx)
+    except (TypeError, ValueError):
+        idx = None
+    if idx in (0, 1):
+        return "YES" if idx == 0 else "NO"
+    outcome = (trade.get("outcome") or "").strip().lower()
+    if outcome in ("yes", "no"):
+        return outcome.upper()
+    return None
+
+
+def is_copyable_trade(trade: dict) -> bool:
+    """
+    Only mirror fresh position-OPENING trades. Skip:
+      - REDEEM / settlement payouts (type != TRADE)
+      - SELL legs (the whale is exiting, not entering)
+    """
+    ttype = (trade.get("type") or "").upper()
+    side  = (trade.get("side") or "").upper()
+    if ttype and ttype != "TRADE":
+        return False
+    if side and side != "BUY":
+        return False
+    return True
 
 
 def _whale_tier_weight(pnl: float) -> float:
@@ -180,16 +241,28 @@ def scan_new_whale_trades(whales: list[dict]) -> list[dict]:
                 continue
             if not is_trade_fresh(trade):
                 continue
+            # Only mirror fresh position-opening BUY trades (skip REDEEM/SELL).
+            if not is_copyable_trade(trade):
+                seen_trade_ids.add(trade_id)
+                continue
             question = trade.get("title") or trade.get("market", {}).get("question", "")
             if is_blocked_category(question):
                 logger.info(f"Blocked category trade: {question[:60]}")
                 seen_trade_ids.add(trade_id)
                 continue
+
+            direction = normalize_direction(trade)
+            if direction is None:
+                # Non-binary outcome (e.g. multi-team spread) — can't map to YES/NO.
+                seen_trade_ids.add(trade_id)
+                continue
+
             seen_trade_ids.add(trade_id)
             trade["whale_wallet"]    = wallet
             trade["whale_username"]  = whale.get("userName", wallet[:8])
             trade["whale_pnl"]       = whale.get("pnl", 0)
             trade["whale_win_rate"]  = whale.get("estimated_win_rate", 0)
+            trade["direction"]       = direction
 
             # Feed the rolling consensus buffer.
             market_id = (
@@ -198,12 +271,11 @@ def scan_new_whale_trades(whales: list[dict]) -> list[dict]:
                 or trade.get("market", {}).get("id")
                 or trade.get("slug")
             )
-            direction = (trade.get("side") or trade.get("outcome") or "YES").upper()
             record_bet(
                 market_id, direction, wallet,
                 trade["whale_username"], trade["whale_pnl"],
             )
 
             new_trades.append(trade)
-            logger.info(f"New whale trade: {whale.get('userName')} → {question[:60]}")
+            logger.info(f"New whale trade: {whale.get('userName')} → {direction} {question[:55]}")
     return new_trades

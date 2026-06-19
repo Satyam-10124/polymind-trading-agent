@@ -117,8 +117,16 @@ def process_whale_trade(trade: dict, open_pos: list | None = None,
             except Exception:
                 raw_token_ids = []
         token_ids = raw_token_ids if isinstance(raw_token_ids, list) else []
-        side      = (trade.get("side") or trade.get("outcome") or "YES").upper()
-        token_id  = token_ids[0] if side == "YES" and token_ids else (token_ids[1] if len(token_ids) > 1 else None)
+
+        # Direction was normalized from outcomeIndex in scan_new_whale_trades.
+        side = (trade.get("direction") or "YES").upper()
+        outcome_idx = 0 if side == "YES" else 1
+
+        # Prefer the exact token the whale traded (activity `asset`); otherwise
+        # index into the market's token array by outcome.
+        token_id = trade.get("asset") or trade.get("token_id")
+        if not token_id and token_ids:
+            token_id = token_ids[outcome_idx] if len(token_ids) > outcome_idx else token_ids[0]
 
         if not token_id:
             logger.warning(f"No token_id for {question[:50]}")

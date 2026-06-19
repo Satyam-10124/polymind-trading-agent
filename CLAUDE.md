@@ -160,6 +160,23 @@ deployments are migrated in place on startup.
   conservative, not a semantic matcher.
 - **Whale category win rates depend on the data API returning per-trade `pnl`**;
   when absent, per-category rates simply stay empty — handle missing keys.
+- **data-api `/activity` field semantics (verified, easy to get wrong):**
+  `side` is `BUY`/`SELL` (enter vs exit), NOT the outcome. The YES/NO direction
+  comes from `outcomeIndex` (0=YES/first token, 1=NO/second). `type` is `TRADE`
+  vs `REDEEM` (settlement — skip). Use `monitor.normalize_direction()` +
+  `is_copyable_trade()`; never treat `side` as direction. `asset` is the exact
+  token id the whale traded.
+- **Resolution lookups: use CLOB `/{CLOB_API}/markets/{condition_id}`**, which is
+  keyed by condition id and returns per-token `winner`/`price`. The Gamma
+  `/markets?conditionId=` filter is unreliable — it ignores the filter and
+  returns arbitrary markets (we match on the returned `conditionId` where we must
+  use Gamma). Price history is `{CLOB_API}/prices-history` (NOT Gamma → 404).
+- **Sports leak past `BLOCK_CATEGORIES`** because the question text often has no
+  "sports" keyword ("Will Canada win on …?", "A vs. B: O/U 2.5"). `is_blocked_category`
+  also matches structural patterns (`vs.`, `O/U`, `spread`, `(-1.5)`, dated
+  "win on"). NOTE: current top-PnL leaderboard whales trade mostly sports, so a
+  whale-set ingest can yield few non-sports scorable markets — the backtest funnel
+  log surfaces this rather than failing silently.
 - Telegram/CLOB libs are optional imports — code must degrade gracefully when
   `_bot` is `None` or `py-clob-client` is missing (it prints/mocks instead).
 - `claude_agent.py` and the legacy `*_COPY_*` / `MARKET_SCAN_*` prompts are kept
