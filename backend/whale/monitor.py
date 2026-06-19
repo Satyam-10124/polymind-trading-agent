@@ -5,6 +5,7 @@ from typing import Optional
 from config import (
     DATA_API, WHALE_MIN_PNL, WHALE_MIN_PNL_MARGIN, COPY_MAX_DELAY_SECS,
     BLOCK_CATEGORIES, CONSENSUS_MIN_WHALES, CONSENSUS_WINDOW_SECS,
+    WHALE_RECENCY_DAYS, WHALE_RECENCY_CACHE_SECS, WHALE_RECENCY_FETCH_LIMIT,
 )
 from db.models import dedup_contains, dedup_mark
 
@@ -12,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 # Scope name for persisted trade-id dedup (see db.models.dedup_*).
 _SEEN_TRADES_SCOPE = "seen_trade"
+
+# Per-wallet recent-PnL cache: wallet -> (computed_at_ts, recent_pnl).
+_recency_cache: dict[str, tuple[float, float]] = {}
 
 # Rolling buffer of recent whale bets for consensus detection.
 # Each entry: {market_id, direction, wallet, username, pnl, ts}
@@ -83,6 +87,73 @@ def get_whale_positions(wallet: str) -> list[dict]:
     except Exception as e:
         logger.error(f"Positions fetch for {wallet}: {e}")
         return []
+
+
+def recent_pnl(wallet: str, days: int = WHALE_RECENCY_DAYS,
+               now: float | None = None) -> float | None:
+    """
+    Sum a wallet's realized PnL over the trailing `days` from /activity.
+
+    Returns the summed PnL, or None if the activity couldn't be fetched (so the
+    caller can fail-open rather than wrongly drop a whale on a transient error).
+    Cached per wallet for WHALE_RECENCY_CACHE_SECS — the signal barely moves
+    between 30s scans and /activity is rate-limited.
+    """
+    now = now or time.time()
+    cached = _recency_cache.get(wallet)
+    if cached and (now - cached[0]) < WHALE_RECENCY_CACHE_SECS:
+        return cached[1]
+
+    activity = get_whale_activity(wallet, limit=WHALE_RECENCY_FETCH_LIMIT)
+    if not activity:
+        # Don't cache a failure — retry next scan rather than pin a wrong value.
+        return None
+
+    cutoff = now - days * 86400
+    total = 0.0
+    for t in activity:
+        ts = normalize_ts(t.get("timestamp") or t.get("createdAt") or t.get("time"))
+        if ts is None or ts < cutoff:
+            continue
+        try:
+            total += float(t.get("pnl") or 0)
+        except (TypeError, ValueError):
+            continue
+
+    _recency_cache[wallet] = (now, total)
+    return total
+
+
+def filter_whales_by_recency(whales: list[dict],
+                             now: float | None = None) -> list[dict]:
+    """
+    Drop whales whose trailing-window PnL is negative — a trader top-ranked by
+    ALL-TIME PnL may have blown up over the last WHALE_RECENCY_DAYS. Run this
+    AFTER filter_whales.
+
+    Fail-open: if recent activity can't be fetched for a wallet, the whale is
+    KEPT (a transient /activity error must not silently empty the whale set).
+    Each surviving whale gets a `recent_pnl` field for downstream visibility.
+    """
+    kept = []
+    for w in whales:
+        wallet = w.get("proxyWallet")
+        if not wallet:
+            kept.append(w)  # nothing to check against; keep
+            continue
+        rp = recent_pnl(wallet, now=now)
+        if rp is None:
+            logger.warning(f"Recency check skipped for {w.get('userName', wallet[:8])} "
+                           f"(no activity data) — keeping")
+            kept.append(w)
+            continue
+        if rp < 0:
+            logger.info(f"Dropping {w.get('userName', wallet[:8])}: "
+                        f"{WHALE_RECENCY_DAYS}d PnL ${rp:,.0f} < 0")
+            continue
+        w["recent_pnl"] = round(rp, 2)
+        kept.append(w)
+    return kept
 
 
 def normalize_ts(ts) -> float | None:

@@ -30,6 +30,14 @@ WHALE_MIN_PNL        = float(os.getenv("WHALE_MIN_PNL", "10000"))
 WHALE_MIN_PNL_MARGIN = float(os.getenv("WHALE_MIN_PNL_MARGIN", "0.05"))
 COPY_MAX_DELAY_SECS  = int(os.getenv("COPY_MAX_DELAY_SECONDS", "300"))
 
+# Recency filter: a whale top-ranked by ALL-TIME PnL may have blown up recently.
+# Drop anyone whose PnL over the trailing WHALE_RECENCY_DAYS is negative. Results
+# are cached per wallet for WHALE_RECENCY_CACHE_SECS (aggressive — the recent-PnL
+# signal barely moves between scans, and /activity is rate-limited).
+WHALE_RECENCY_DAYS        = int(os.getenv("WHALE_RECENCY_DAYS", "90"))
+WHALE_RECENCY_CACHE_SECS  = int(os.getenv("WHALE_RECENCY_CACHE_SECONDS", str(6 * 3600)))
+WHALE_RECENCY_FETCH_LIMIT = int(os.getenv("WHALE_RECENCY_FETCH_LIMIT", "200"))
+
 # Multi-whale consensus filter
 CONSENSUS_MIN_WHALES = int(os.getenv("CONSENSUS_MIN_WHALES", "3"))
 CONSENSUS_WINDOW_SECS = int(os.getenv("CONSENSUS_WINDOW_HOURS", "4")) * 3600

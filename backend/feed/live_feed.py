@@ -29,7 +29,9 @@ import logging
 import threading
 
 from config import WS_URL, USE_WEBSOCKET, WHALE_REFRESH_SECS
-from whale.monitor import get_leaderboard, filter_whales, scan_new_whale_trades
+from whale.monitor import (
+    get_leaderboard, filter_whales, filter_whales_by_recency, scan_new_whale_trades,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +73,7 @@ class LiveFeed:
         if now - self._last_whale_refresh < WHALE_REFRESH_SECS and self._whales:
             return
         leaderboard = get_leaderboard(limit=30)
-        self._whales = filter_whales(leaderboard)
+        self._whales = filter_whales_by_recency(filter_whales(leaderboard))
         self._last_whale_refresh = now
         logger.info(f"LiveFeed refreshed whale set: {len(self._whales)} qualified")
 

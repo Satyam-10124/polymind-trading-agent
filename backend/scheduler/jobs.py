@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BANKROLL, MIN_CLAUDE_SCORE
 from risk.kelly import kelly_bet
 from whale.monitor import (
-    get_leaderboard, filter_whales, scan_new_whale_trades, compute_consensus,
-    normalize_ts,
+    get_leaderboard, filter_whales, filter_whales_by_recency,
+    scan_new_whale_trades, compute_consensus, normalize_ts,
 )
 from whale.profiler import build_profile, get_size_multiplier
 from brain.committee import run_committee, run_post_mortem, derive_event_key, _resolve_day
@@ -56,7 +56,7 @@ def whale_scan_job():
         return
 
     leaderboard = get_leaderboard(limit=30)
-    whales      = filter_whales(leaderboard)
+    whales      = filter_whales_by_recency(filter_whales(leaderboard))
     logger.info(f"Tracking {len(whales)} qualified whales")
 
     new_trades = scan_new_whale_trades(whales)
