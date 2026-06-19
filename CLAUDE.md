@@ -65,7 +65,10 @@ dashboard/src/
   Kelly is only optimal on a *true* prob. `risk/calibration.py` measures historical
   over/under-confidence (predicted vs realized win rate) and shrinks the prob toward
   the market price — weighted by that factor and consensus — capped at
-  `MAX_PROB_DEVIATION`, before `kelly_bet` in `jobs.py`.
+  `MAX_PROB_DEVIATION`, before `kelly_bet` in `jobs.py`. **Cold start:** until
+  `CALIBRATION_MIN_SAMPLES` opinionated outcomes exist the factor can't be
+  measured (defaults to 1.0), so the edge is clamped to the tighter
+  `COLD_START_MAX_DEVIATION` (0.05) instead — the first ~20 trades bet small.
 - **Model cascade.** `_call` in `committee.py` takes a per-agent model. Defaults
   (`COMMITTEE_MODELS` in `config.py`): archetype→Haiku, intent/efficiency/portfolio/
   sizing→Sonnet, CRO + final vote→Opus. The free deterministic `portfolio_hard_checks`

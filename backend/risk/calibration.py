@@ -15,12 +15,16 @@ Two layers:
        - and by the consensus strength (more aligned whales -> trust the edge more),
        - then hard-cap the maximum edge claim at MAX_PROB_DEVIATION.
 
-When there is too little history (< CALIBRATION_MIN_SAMPLES) we apply only the
-deviation cap and a mild default shrink, never the data-driven factor.
+When there is too little history (< CALIBRATION_MIN_SAMPLES opinionated outcomes)
+the data-driven factor can't be measured and defaults to 1.0 (no shrink). To stop
+a raw, unproven LLM edge flowing straight into Kelly during this window, we apply
+a tighter cold-start cap (COLD_START_MAX_DEVIATION, 0.05) instead of the usual
+MAX_PROB_DEVIATION (0.15), so the first ~20 live trades bet a small edge.
 """
 import logging
 from config import (
-    CALIBRATION_ENABLED, CALIBRATION_MIN_SAMPLES, MAX_PROB_DEVIATION, MIN_EDGE,
+    CALIBRATION_ENABLED, CALIBRATION_MIN_SAMPLES, MAX_PROB_DEVIATION,
+    COLD_START_MAX_DEVIATION, MIN_EDGE,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,21 +85,36 @@ def calibrate_probability(my_prob: float, market_price: float,
                           samples: list[dict] | None = None,
                           consensus_score: float = 0.0) -> dict:
     """
-    Returns {calibrated_prob, raw_prob, factor, capped, reason}.
+    Returns {calibrated_prob, raw_prob, factor, capped, cold_start, reason}.
 
     The calibrated probability is the market price plus a shrunk, capped deviation:
         deviation     = my_prob - market_price
         trust         = overconfidence_factor (data) blended with consensus
         shrunk        = deviation * trust
-        capped        = clamp(shrunk, ±MAX_PROB_DEVIATION)
+        capped        = clamp(shrunk, ±cap)
         calibrated    = market_price + capped
+
+    Cold-start safeguard: until we have CALIBRATION_MIN_SAMPLES opinionated
+    outcomes, overconfidence_factor returns 1.0 (no data-driven shrink), so a
+    raw, unproven LLM edge would otherwise pass straight through (capped only at
+    the loose MAX_PROB_DEVIATION). During this period we instead clamp the
+    claimed edge to the tighter COLD_START_MAX_DEVIATION (0.05 vs 0.15), so the
+    first ~20 live trades bet a deliberately small edge until the model has
+    earned trust. `cold_start` in the result flags when this tighter cap applied.
     """
     samples = samples or []
     raw_dev = my_prob - market_price
 
     if not CALIBRATION_ENABLED:
         return {"calibrated_prob": my_prob, "raw_prob": my_prob,
-                "factor": 1.0, "capped": False, "reason": "calibration disabled"}
+                "factor": 1.0, "capped": False, "cold_start": False,
+                "reason": "calibration disabled"}
+
+    # Opinionated-sample count drives both the data factor and the cold-start
+    # decision — keep them on the same definition (predicted away from 0.5).
+    n = len([s for s in samples if abs(s["my_prob"] - 0.5) >= 0.05])
+    cold_start = n < CALIBRATION_MIN_SAMPLES
+    cap = COLD_START_MAX_DEVIATION if cold_start else MAX_PROB_DEVIATION
 
     data_factor = overconfidence_factor(samples)
     # Consensus raises trust in the edge: 0 whales-aligned -> use data factor as-is;
@@ -104,17 +123,17 @@ def calibrate_probability(my_prob: float, market_price: float,
 
     shrunk = raw_dev * trust
     capped = False
-    if shrunk > MAX_PROB_DEVIATION:
-        shrunk = MAX_PROB_DEVIATION; capped = True
-    elif shrunk < -MAX_PROB_DEVIATION:
-        shrunk = -MAX_PROB_DEVIATION; capped = True
+    if shrunk > cap:
+        shrunk = cap; capped = True
+    elif shrunk < -cap:
+        shrunk = -cap; capped = True
 
     calibrated = max(0.01, min(0.99, market_price + shrunk))
 
-    n = len([s for s in samples if abs(s["my_prob"] - 0.5) >= 0.05])
     reason = (
         f"trust={trust:.2f} (data_factor={data_factor:.2f}, n={n}, "
         f"consensus={consensus_score:.2f}); raw_dev={raw_dev:+.3f} -> {shrunk:+.3f}"
+        + (f" [COLD-START cap={cap:.2f}]" if cold_start else "")
         + (" [CAPPED]" if capped else "")
     )
     logger.info(
@@ -122,4 +141,5 @@ def calibrate_probability(my_prob: float, market_price: float,
         f"-> calibrated={calibrated:.3f} | {reason}"
     )
     return {"calibrated_prob": round(calibrated, 4), "raw_prob": my_prob,
-            "factor": round(trust, 3), "capped": capped, "reason": reason}
+            "factor": round(trust, 3), "capped": capped, "cold_start": cold_start,
+            "reason": reason}

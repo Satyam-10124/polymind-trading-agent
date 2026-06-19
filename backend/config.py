@@ -98,6 +98,11 @@ WS_DEBOUNCE_SECS     = float(os.getenv("WS_DEBOUNCE_SECONDS", "5"))
 CALIBRATION_ENABLED  = os.getenv("CALIBRATION_ENABLED", "true").lower() == "true"
 CALIBRATION_MIN_SAMPLES = int(os.getenv("CALIBRATION_MIN_SAMPLES", "20"))
 MAX_PROB_DEVIATION   = float(os.getenv("MAX_PROB_DEVIATION", "0.15"))  # cap edge claim
+# Cold-start safeguard: until we have CALIBRATION_MIN_SAMPLES opinionated outcomes
+# to measure the model's calibration, the overconfidence factor defaults to 1.0
+# (no shrink), so a raw, unproven LLM edge would flow into Kelly. Until then we
+# clamp the claimed edge to this tighter cap instead of MAX_PROB_DEVIATION.
+COLD_START_MAX_DEVIATION = float(os.getenv("COLD_START_MAX_DEVIATION", "0.05"))
 
 # ── Backtest / execution realism ──────────────────────────────
 SLIPPAGE_BPS         = float(os.getenv("SLIPPAGE_BPS", "150"))   # modeled entry slippage
