@@ -149,6 +149,14 @@ deployments are migrated in place on startup.
 - **Consensus buffer is in-memory** (`monitor._recent_bets`). It resets on
   restart, so consensus needs whales to bet within one running window. Profiles
   (`profiler._profiles`) are likewise cached in-process but also persisted.
+- **Dedup state is persisted** in the `dedup_keys` table (`db.models.dedup_*`),
+  not in-memory sets. Three scopes: `seen_trade` (whale trade ids),
+  `consensus_processed` (`market_id|side` already sent to the committee),
+  `post_mortem_done` (post-mortemed position ids). Survives restarts and is
+  bounded to `DEDUP_MAX_ROWS` (50k) per scope, oldest evicted. So a
+  committee-processed market+direction will NOT re-trigger after a restart
+  (intended — don't re-open the same position), even though `_recent_bets` is
+  empty then.
 - **`run_committee` will hard-reject before reaching sizing** on a CRO veto
   (>40%), a portfolio hard-check failure, or an LLM portfolio "Reject". The
   returned dict still includes whatever `committee_reports` were produced so far.

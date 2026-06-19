@@ -6,10 +6,12 @@ from config import (
     DATA_API, WHALE_MIN_PNL, WHALE_MIN_PNL_MARGIN, COPY_MAX_DELAY_SECS,
     BLOCK_CATEGORIES, CONSENSUS_MIN_WHALES, CONSENSUS_WINDOW_SECS,
 )
+from db.models import dedup_contains, dedup_mark
 
 logger = logging.getLogger(__name__)
 
-seen_trade_ids: set = set()
+# Scope name for persisted trade-id dedup (see db.models.dedup_*).
+_SEEN_TRADES_SCOPE = "seen_trade"
 
 # Rolling buffer of recent whale bets for consensus detection.
 # Each entry: {market_id, direction, wallet, username, pnl, ts}
@@ -246,27 +248,27 @@ def scan_new_whale_trades(whales: list[dict]) -> list[dict]:
         activity = get_whale_activity(wallet, limit=3)
         for trade in activity:
             trade_id = trade.get("id") or trade.get("transactionHash")
-            if not trade_id or trade_id in seen_trade_ids:
+            if not trade_id or dedup_contains(_SEEN_TRADES_SCOPE, trade_id):
                 continue
             if not is_trade_fresh(trade):
                 continue
             # Only mirror fresh position-opening BUY trades (skip REDEEM/SELL).
             if not is_copyable_trade(trade):
-                seen_trade_ids.add(trade_id)
+                dedup_mark(_SEEN_TRADES_SCOPE, trade_id)
                 continue
             question = trade.get("title") or trade.get("market", {}).get("question", "")
             if is_blocked_category(question):
                 logger.info(f"Blocked category trade: {question[:60]}")
-                seen_trade_ids.add(trade_id)
+                dedup_mark(_SEEN_TRADES_SCOPE, trade_id)
                 continue
 
             direction = normalize_direction(trade)
             if direction is None:
                 # Non-binary outcome (e.g. multi-team spread) — can't map to YES/NO.
-                seen_trade_ids.add(trade_id)
+                dedup_mark(_SEEN_TRADES_SCOPE, trade_id)
                 continue
 
-            seen_trade_ids.add(trade_id)
+            dedup_mark(_SEEN_TRADES_SCOPE, trade_id)
             trade["whale_wallet"]    = wallet
             trade["whale_username"]  = whale.get("userName", wallet[:8])
             trade["whale_pnl"]       = whale.get("pnl", 0)

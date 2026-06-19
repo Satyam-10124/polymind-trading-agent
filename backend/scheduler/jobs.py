@@ -17,14 +17,20 @@ from db.models import (
     save_signal, get_stats, save_post_mortem, save_committee_report,
     save_consensus_event, save_whale_profile, save_lessons, get_recent_outcomes,
     mark_lessons_applied, get_recent_lessons_for_category,
+    dedup_contains, dedup_mark,
 )
 
 logger = logging.getLogger(__name__)
 
 _telegram_send = None
-# Tracks (market_id, direction) pairs already processed in this session
-# so the same consensus doesn't re-trigger the committee every 30s.
-_consensus_processed: set = set()
+
+# Persisted dedup scopes (see db.models.dedup_*). These replace the old
+# in-memory sets so dedup survives restarts and stays memory-bounded:
+#   _CONSENSUS_SCOPE   — (market_id, side) pairs already sent to the committee,
+#                        so the same consensus doesn't re-trigger every scan.
+#   _POST_MORTEM_SCOPE — position ids already post-mortemed.
+_CONSENSUS_SCOPE   = "consensus_processed"
+_POST_MORTEM_SCOPE = "post_mortem_done"
 
 
 def set_telegram(fn):
@@ -145,8 +151,8 @@ def process_whale_trade(trade: dict, open_pos: list | None = None,
         # Only convene the (expensive) committee when CONSENSUS_MIN_WHALES
         # tracked whales have bet the same direction on this market within
         # the rolling window.
-        consensus_key = (market_id, side)
-        if consensus_key in _consensus_processed:
+        consensus_key = f"{market_id}|{side}"
+        if dedup_contains(_CONSENSUS_SCOPE, consensus_key):
             logger.debug(f"Consensus already processed for {question[:50]}, skipping.")
             return
 
@@ -158,7 +164,7 @@ def process_whale_trade(trade: dict, open_pos: list | None = None,
             )
             return
 
-        _consensus_processed.add(consensus_key)
+        dedup_mark(_CONSENSUS_SCOPE, consensus_key)
 
         logger.info(
             f"🐳 CONSENSUS: {consensus['whale_count']} whales aligned {side} "
@@ -373,9 +379,6 @@ def daily_report_job():
     notify(f"📊 DAILY REPORT\n\n{report[:1000]}")
 
 
-_post_mortem_done: set = set()
-
-
 def post_mortem_job():
     """
     Runs after every closed trade — feeds outcome back to Claude for learning.
@@ -386,7 +389,7 @@ def post_mortem_job():
 
     for pos in closed:
         pos_id = pos.get("id")
-        if pos_id in _post_mortem_done:
+        if dedup_contains(_POST_MORTEM_SCOPE, pos_id):
             continue
 
         opened = pos.get("opened_at", "")
@@ -414,7 +417,7 @@ def post_mortem_job():
         except Exception as e:
             logger.error(f"lessons persist failed: {e}")
 
-        _post_mortem_done.add(pos_id)
+        dedup_mark(_POST_MORTEM_SCOPE, pos_id)
 
         lessons_text = " | ".join(report.get("lessons", [])[:2])
         edge_real    = "✅ Real edge" if report.get("edge_was_real") else "❌ Phantom edge"

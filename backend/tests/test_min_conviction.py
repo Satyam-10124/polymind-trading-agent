@@ -32,9 +32,8 @@ class _FakeResp:
 @pytest.fixture
 def harness(monkeypatch, temp_db):
     """Stub every boundary process_whale_trade touches and spy on place_order."""
-    # Reset the module-level consensus dedupe so each test starts clean.
-    jobs._consensus_processed.clear()
-
+    # Consensus dedup now lives in the dedup_keys table; the temp_db fixture
+    # gives each test a fresh empty DB, so no manual reset is needed.
     monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp())
     monkeypatch.setattr(jobs, "get_current_price", lambda token_id: 0.5)
     monkeypatch.setattr(jobs, "compute_consensus", lambda market_id, side: {

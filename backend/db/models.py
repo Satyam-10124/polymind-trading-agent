@@ -158,6 +158,19 @@ def init_db():
         results       TEXT,
         created_at    TEXT
     );
+    -- ── Dedup state ───────────────────────────────────────────
+    -- Persistent replacement for the old in-memory dedup sets (seen trade ids,
+    -- processed consensus keys, completed post-mortems). `scope` namespaces the
+    -- key kind so one table serves all callers; (scope, key) is unique. Bounded
+    -- by a hard row cap (oldest dropped) so it can never grow without limit.
+    CREATE TABLE IF NOT EXISTS dedup_keys (
+        scope       TEXT NOT NULL,
+        key         TEXT NOT NULL,
+        created_at  TEXT,
+        PRIMARY KEY (scope, key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_dedup_scope_created
+        ON dedup_keys (scope, created_at);
     """)
     conn.commit()
     conn.close()
@@ -179,6 +192,18 @@ def _safe_add_column(table: str, column: str, decl: str):
         conn.close()
 
 
+def _safe_exec(sql: str):
+    """Run a single idempotent DDL statement, swallowing 'already exists'."""
+    conn = get_conn()
+    try:
+        conn.execute(sql)
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
 def _run_migrations():
     # Columns added after initial release — safe to run repeatedly.
     _safe_add_column("positions", "category", "TEXT")
@@ -187,6 +212,17 @@ def _run_migrations():
     _safe_add_column("positions", "event_key", "TEXT")
     _safe_add_column("signals", "consensus_score", "REAL DEFAULT 0")
     _safe_add_column("signals", "position_id", "TEXT")
+    # Persistent dedup state (replaces in-memory sets). Created here too so
+    # existing deployments that predate the table are migrated in place.
+    _safe_exec("""
+        CREATE TABLE IF NOT EXISTS dedup_keys (
+            scope       TEXT NOT NULL,
+            key         TEXT NOT NULL,
+            created_at  TEXT,
+            PRIMARY KEY (scope, key)
+        )
+    """)
+    _safe_exec("CREATE INDEX IF NOT EXISTS idx_dedup_scope_created ON dedup_keys (scope, created_at)")
 
 
 def _init_positions_tables(conn):
@@ -749,3 +785,77 @@ def get_calibration_samples(limit: int = 500) -> list[dict]:
         {"my_prob": float(r["my_prob"]), "win": 1 if float(r["pnl"] or 0) > 0 else 0}
         for r in rows
     ]
+
+
+# ── Persistent dedup state ────────────────────────────────────
+# Replaces the old in-memory sets (seen_trade_ids, _consensus_processed,
+# _post_mortem_done) so dedup survives restarts and can never grow unbounded.
+# Each caller uses its own `scope` string; (scope, key) is unique. Per scope we
+# keep at most DEDUP_MAX_ROWS rows, evicting the oldest on insert.
+
+DEDUP_MAX_ROWS = 50_000
+
+
+def dedup_contains(scope: str, key: str) -> bool:
+    """True if (scope, key) has already been recorded."""
+    if key is None:
+        return False
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT 1 FROM dedup_keys WHERE scope=? AND key=? LIMIT 1", (scope, str(key))
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def dedup_mark(scope: str, key: str, max_rows: int = DEDUP_MAX_ROWS):
+    """
+    Record (scope, key). Idempotent (INSERT OR IGNORE). After inserting, enforce
+    the per-scope row cap by deleting the oldest rows beyond `max_rows`.
+    """
+    if key is None:
+        return
+    conn = get_conn()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO dedup_keys (scope, key, created_at) VALUES (?,?,?)",
+            (scope, str(key), datetime.now(timezone.utc).isoformat()),
+        )
+        # Evict oldest rows in this scope beyond the cap. rowid is monotonic with
+        # insertion, so it's a stable tiebreaker when created_at collides.
+        conn.execute(
+            """
+            DELETE FROM dedup_keys
+            WHERE scope=? AND rowid NOT IN (
+                SELECT rowid FROM dedup_keys WHERE scope=?
+                ORDER BY created_at DESC, rowid DESC LIMIT ?
+            )
+            """,
+            (scope, scope, max_rows),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def dedup_seen(scope: str, key: str, max_rows: int = DEDUP_MAX_ROWS) -> bool:
+    """
+    Check-and-mark in one call. Returns True if the key was ALREADY present
+    (caller should skip), False if it was newly recorded (caller should proceed).
+    """
+    if key is None:
+        return False
+    if dedup_contains(scope, key):
+        return True
+    dedup_mark(scope, key, max_rows=max_rows)
+    return False
+
+
+def dedup_count(scope: str) -> int:
+    """Number of recorded keys in a scope (for tests / introspection)."""
+    conn = get_conn()
+    n = conn.execute(
+        "SELECT COUNT(*) AS c FROM dedup_keys WHERE scope=?", (scope,)
+    ).fetchone()["c"]
+    conn.close()
+    return n
