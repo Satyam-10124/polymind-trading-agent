@@ -3,7 +3,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BANKROLL
+from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BANKROLL, MIN_CLAUDE_SCORE
 from risk.kelly import kelly_bet
 from whale.monitor import (
     get_leaderboard, filter_whales, scan_new_whale_trades, compute_consensus,
@@ -197,6 +197,24 @@ def process_whale_trade(trade: dict, open_pos: list | None = None,
             bankroll      = bankroll,
             consensus     = consensus,
         )
+
+        # Enforce the minimum committee conviction. An APPROVE below
+        # MIN_CLAUDE_SCORE is downgraded to WATCH so it is logged and surfaced
+        # but never sized or executed. (The committee path otherwise ignores
+        # this floor — only the legacy single-pass analyst applied it.)
+        if verdict.get("verdict") == "APPROVE" and \
+                int(verdict.get("conviction", 0) or 0) < MIN_CLAUDE_SCORE:
+            logger.info(
+                f"Conviction {verdict.get('conviction')}/10 below MIN_CLAUDE_SCORE "
+                f"({MIN_CLAUDE_SCORE}) — downgrading APPROVE → WATCH for {question[:50]}"
+            )
+            notify(
+                f"🟡 Committee APPROVE downgraded → WATCH (low conviction)\n"
+                f"Market: {question[:55]}\n"
+                f"Conviction: {verdict.get('conviction',0)}/10 < {MIN_CLAUDE_SCORE} threshold\n"
+                f"No order placed."
+            )
+            verdict["verdict"] = "WATCH"
 
         save_signal({
             "question":        question,
