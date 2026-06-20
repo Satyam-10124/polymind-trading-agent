@@ -206,16 +206,33 @@ All values live in `backend/.env`:
 
 ## Going Live (Safety Checklist)
 
-Run in paper mode for **at least 5 days** before going live.
+Do **not** set `PAPER_MODE=false` until **all three hard gates** below pass. They
+are non-negotiable: paper mode is not validation (its consensus buffer is
+in-memory), so a clean backtest and a green test suite are what actually justify
+risking capital.
+
+**Hard gates (all required):**
 
 ```
-□  Paper mode ran for 5+ days with >60% signal accuracy
+□  Paper mode ran for at least 5 days
+□  Full test suite passes:  make test   (0 failures)
+□  At least one walk-forward backtest with POSITIVE out-of-sample ROI:
+       python3 -m backtest.ingest
+       python3 -m backtest.engine --split 0.7
+   → the TEST (out-of-sample) roi must be > 0 (not just the train roi)
+```
+
+**Then the operational checks:**
+
+```
+□  Paper-mode signal accuracy >60% over the 5-day run
 □  Telegram alerts are working correctly
 □  At least 10 Committee APPROVE decisions reviewed manually
 □  Post-mortem reports are generating and making sense
+□  API_TOKEN set + CORS locked (DASHBOARD_ORIGINS) if the dashboard is exposed
 □  Wallet funded: send USDC (Polygon) to your wallet address
 □  Set PAPER_MODE=false in .env
-□  Restart: python main.py
+□  Restart: python3 main.py
 ```
 
 **Never put more into the wallet than you can afford to lose entirely.**

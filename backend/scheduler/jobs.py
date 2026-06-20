@@ -3,7 +3,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BANKROLL, MIN_CLAUDE_SCORE, BANKROLL
+from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BANKROLL, MIN_CLAUDE_SCORE, BANKROLL, MAX_BET_PCT
 from risk.kelly import kelly_bet
 from whale.monitor import (
     get_leaderboard, filter_whales, filter_whales_by_recency,
@@ -284,7 +284,7 @@ def process_whale_trade(trade: dict, open_pos: list | None = None,
         )
         committee_size = float(verdict.get("capital_allocation", 2.0))
         bet_size = min(committee_size, kelly_size) if kelly_size > 0 else committee_size
-        bet_size = max(1.0, min(bet_size, bankroll * 0.10))
+        bet_size = max(1.0, min(bet_size, bankroll * MAX_BET_PCT))
         shares   = bet_size / current_price if current_price > 0 else 0
 
         place_order(token_id, side, bet_size, current_price)
