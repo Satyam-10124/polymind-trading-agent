@@ -38,7 +38,8 @@ def check_position(position: dict) -> str:
         logger.info(f"TAKE PROFIT FULL: {position.get('question','?')[:50]} PnL={pnl_pct:+.1%}")
         return "take_profit_full"
 
-    if pnl_pct >= TAKE_PROFIT_PCT:
+    # Only offer the partial tier if it hasn't already fired for this position.
+    if pnl_pct >= TAKE_PROFIT_PCT and not int(position.get("partial_tp_done", 0)):
         logger.info(f"TAKE PROFIT PARTIAL: {position.get('question','?')[:50]} PnL={pnl_pct:+.1%}")
         return "take_profit_partial"
 

@@ -3,7 +3,8 @@ import time
 import logging
 from typing import Optional
 from config import (
-    DATA_API, WHALE_MIN_PNL, WHALE_MIN_PNL_MARGIN, COPY_MAX_DELAY_SECS,
+    DATA_API, WHALE_MIN_PNL, WHALE_MIN_PNL_MARGIN, WHALE_BIG_PNL_OVERRIDE,
+    COPY_MAX_DELAY_SECS,
     BLOCK_CATEGORIES, CONSENSUS_MIN_WHALES, CONSENSUS_WINDOW_SECS,
     WHALE_RECENCY_DAYS, WHALE_RECENCY_CACHE_SECS, WHALE_RECENCY_FETCH_LIMIT,
 )
@@ -53,7 +54,7 @@ def filter_whales(leaderboard: list[dict]) -> list[dict]:
         if pnl < WHALE_MIN_PNL:
             continue
         pnl_margin = pnl / vol if vol > 0 else 0
-        if pnl_margin < WHALE_MIN_PNL_MARGIN and pnl < 50000:
+        if pnl_margin < WHALE_MIN_PNL_MARGIN and pnl < WHALE_BIG_PNL_OVERRIDE:
             continue
         trader["pnl_margin"] = round(pnl_margin, 3)
         qualified.append(trader)

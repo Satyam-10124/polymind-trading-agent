@@ -3,7 +3,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BANKROLL, MIN_CLAUDE_SCORE, BANKROLL, MAX_BET_PCT
+from config import MAX_OPEN_POSITIONS, PAPER_MODE, CONSENSUS_MIN_WHALES, PEAK_BANKROLL, MIN_CLAUDE_SCORE, BANKROLL, MAX_BET_PCT, PARTIAL_TP_SELL_PCT
 from risk.kelly import kelly_bet
 from whale.monitor import (
     get_leaderboard, filter_whales, filter_whales_by_recency,
@@ -14,7 +14,7 @@ from brain.committee import run_committee, run_post_mortem, derive_event_key, _r
 from risk.tp_sl_manager import check_position, compute_pnl, get_current_price
 from executor.clob_client import place_order, sell_position, get_wallet_balance
 from db.models import (
-    save_position, close_position, get_open_positions,
+    save_position, close_position, update_position, get_open_positions,
     save_signal, get_stats, save_post_mortem, save_committee_report,
     save_consensus_event, save_whale_profile, save_lessons, get_recent_outcomes,
     mark_lessons_applied, get_recent_lessons_for_category,
@@ -348,14 +348,21 @@ def position_check_job():
         pnl         = (current - entry_price) * shares
 
         if signal == "take_profit_partial":
-            sell_qty = shares * 0.75
+            # Fire the partial exit once per position. check_position keys off
+            # price alone, so without this flag the reloaded full share count
+            # would re-trigger the sell on every subsequent check.
+            if int(pos.get("partial_tp_done", 0)):
+                continue
+            sell_qty       = shares * PARTIAL_TP_SELL_PCT
+            remaining      = shares - sell_qty
             sell_position(token_id, sell_qty, current)
             notify(
-                f"💰 TAKE PROFIT (75%): {pos.get('question','?')[:50]}\n"
-                f"Exit @ {current:.3f} | PnL: ${pnl * 0.75:+.2f}"
+                f"💰 TAKE PROFIT ({PARTIAL_TP_SELL_PCT*100:.0f}%): {pos.get('question','?')[:50]}\n"
+                f"Exit @ {current:.3f} | PnL: ${pnl * PARTIAL_TP_SELL_PCT:+.2f}"
             )
-            pos["shares"] = shares * 0.25
-            pos["size"]   = pos["shares"] * entry_price
+            # Persist the reduced position and mark the partial done.
+            update_position(pos["id"], remaining, remaining * entry_price,
+                            partial_tp_done=True)
 
         elif signal in ("take_profit_full", "stop_loss", "time_stop"):
             sell_position(token_id, shares, current)

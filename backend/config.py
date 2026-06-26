@@ -18,6 +18,9 @@ MAX_BET_PCT          = float(os.getenv("MAX_BET_PCT", "0.10"))
 KELLY_FRACTION       = float(os.getenv("KELLY_FRACTION", "0.5"))
 TAKE_PROFIT_PCT      = float(os.getenv("TAKE_PROFIT_PCT", "0.25"))
 STOP_LOSS_PCT        = float(os.getenv("STOP_LOSS_PCT", "0.20"))
+# Fraction of a position sold on the first take-profit tier; the remainder rides
+# to the full-TP / stop / time-stop exits. Fires once per position.
+PARTIAL_TP_SELL_PCT  = float(os.getenv("PARTIAL_TP_SELL_PCT", "0.75"))
 MIN_EDGE             = float(os.getenv("MIN_EDGE", "0.08"))
 MIN_CLAUDE_SCORE     = int(os.getenv("MIN_CLAUDE_SCORE", "7"))
 MAX_OPEN_POSITIONS   = int(os.getenv("MAX_OPEN_POSITIONS", "8"))
@@ -28,6 +31,10 @@ WHALE_MIN_PNL        = float(os.getenv("WHALE_MIN_PNL", "10000"))
 # exposes pnl and vol, never win/loss counts. The real win rate is computed
 # downstream from trade history in whale/profiler.py when a whale actually trades.
 WHALE_MIN_PNL_MARGIN = float(os.getenv("WHALE_MIN_PNL_MARGIN", "0.05"))
+# Absolute all-time PnL at/above which a whale is admitted even if its profit
+# margin is thin — big winners are kept regardless of margin. Pairs with the
+# WHALE_MIN_PNL_MARGIN gate in filter_whales.
+WHALE_BIG_PNL_OVERRIDE = float(os.getenv("WHALE_BIG_PNL_OVERRIDE", "50000"))
 COPY_MAX_DELAY_SECS  = int(os.getenv("COPY_MAX_DELAY_SECONDS", "300"))
 
 # Recency filter: a whale top-ranked by ALL-TIME PnL may have blown up recently.

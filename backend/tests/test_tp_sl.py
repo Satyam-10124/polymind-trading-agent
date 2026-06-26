@@ -64,6 +64,24 @@ def test_no_stop_loss(mock_price):
     assert tp_sl_manager.check_position(pos) == "stop_loss"
 
 
+# ── Partial TP fires only once ───────────────────────────────────────────────
+
+def test_partial_tp_not_reoffered_once_done(mock_price):
+    # Same +30% gain that would trigger a partial, but partial_tp_done is set:
+    # check_position must NOT re-offer the partial tier (it would re-sell the
+    # remainder every cycle). It holds until the full-TP tier (>=+50%).
+    mock_price(0.52)
+    pos = {"token_id": "yes-tok", "entry_price": 0.40, "partial_tp_done": 1}
+    assert tp_sl_manager.check_position(pos) == "hold"
+
+
+def test_full_tp_still_fires_after_partial(mock_price):
+    # Even with the partial already done, a big enough move still takes full TP.
+    mock_price(0.62)  # +55% on a 0.40 entry
+    pos = {"token_id": "yes-tok", "entry_price": 0.40, "partial_tp_done": 1}
+    assert tp_sl_manager.check_position(pos) == "take_profit_full"
+
+
 # ── PnL sign sanity for both directions ──────────────────────────────────────
 
 def test_no_position_pnl_positive_when_no_token_rises(mock_price):

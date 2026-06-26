@@ -3,7 +3,10 @@ import sqlite3
 import os
 from datetime import datetime, timezone
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "polymind.db")
+# Defaults to backend/../polymind.db for local dev. In production set DB_PATH to
+# a file on a persistent disk (e.g. Render mounts one at /data) so SQLite state
+# survives restarts and redeploys.
+DB_PATH = os.getenv("DB_PATH") or os.path.join(os.path.dirname(__file__), "..", "polymind.db")
 
 
 def get_conn():
@@ -218,6 +221,9 @@ def _run_migrations():
     _safe_add_column("positions", "consensus_score", "REAL DEFAULT 0")
     _safe_add_column("positions", "resolve_date", "TEXT")
     _safe_add_column("positions", "event_key", "TEXT")
+    # Marks that the first take-profit tier already sold its slice, so the
+    # remainder isn't re-sold on every subsequent position check.
+    _safe_add_column("positions", "partial_tp_done", "INTEGER DEFAULT 0")
     _safe_add_column("signals", "consensus_score", "REAL DEFAULT 0")
     _safe_add_column("signals", "position_id", "TEXT")
     # Persistent dedup state (replaces in-memory sets). Created here too so
@@ -309,6 +315,29 @@ def close_position(pos_id: str, exit_price: float, pnl: float, reason: str):
     UPDATE positions SET status='closed', exit_price=?, pnl=?,
     exit_reason=?, closed_at=? WHERE id=?
     """, (exit_price, pnl, reason, datetime.now(timezone.utc).isoformat(), pos_id))
+    conn.commit()
+    conn.close()
+
+
+def update_position(pos_id: str, shares: float, size: float,
+                    partial_tp_done: bool | None = None):
+    """
+    Persist a reduced share/size count after a partial exit (and optionally flip
+    the partial_tp_done flag). Without this, get_open_positions() reloads the
+    original full share count from SQLite and the partial sell re-triggers.
+    """
+    if partial_tp_done is None:
+        conn = get_conn()
+        conn.execute(
+            "UPDATE positions SET shares=?, size=? WHERE id=?",
+            (shares, size, pos_id),
+        )
+    else:
+        conn = get_conn()
+        conn.execute(
+            "UPDATE positions SET shares=?, size=?, partial_tp_done=? WHERE id=?",
+            (shares, size, 1 if partial_tp_done else 0, pos_id),
+        )
     conn.commit()
     conn.close()
 
