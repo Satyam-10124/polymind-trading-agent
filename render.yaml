@@ -1,0 +1,81 @@
+# Render Blueprint for PolyMind — deploys both tiers from this repo.
+#
+#   1. polymind-api   : Python web service. Runs the FastAPI dashboard API AND
+#                       the scheduler/Telegram loop (via run_all.py), sharing a
+#                       SQLite file on a persistent disk mounted at /data.
+#   2. polymind-ui    : static React dashboard (Vite build), served from CDN.
+#
+# Setup:
+#   - Push this repo, then in Render: New > Blueprint, point at the repo.
+#   - Fill the env vars marked `sync: false` (secrets) in the dashboard.
+#   - The UI's VITE_API_BASE must point at the API service URL + /api, and
+#     VITE_API_TOKEN must match the API's API_TOKEN.
+#
+# Ships in PAPER_MODE=true by default — no real funds at risk. To go live, set
+# PAPER_MODE=false and provide WALLET_ADDRESS / PRIVATE_KEY.
+
+services:
+  # ── Backend: API + scheduler in one service, one shared SQLite disk ─────────
+  - type: web
+    name: polymind-api
+    runtime: python
+    rootDir: backend
+    plan: starter            # needs a persistent disk; free plan has none.
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run_all.py
+    healthCheckPath: /api/status
+    disk:
+      name: polymind-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      # SQLite lives on the persistent disk so state survives redeploys.
+      - key: DB_PATH
+        value: /data/polymind.db
+      - key: PYTHON_VERSION
+        value: "3.12.4"
+      - key: PAPER_MODE
+        value: "true"
+      # CORS: set to the UI's URL once it's deployed (e.g. https://polymind-ui.onrender.com).
+      - key: DASHBOARD_ORIGINS
+        sync: false
+      # Bearer token gating the API. Must equal the UI's VITE_API_TOKEN.
+      - key: API_TOKEN
+        generateValue: true
+      # ── Secrets / model + trading config (fill in the dashboard) ────────────
+      - key: VIRTUALS_API_KEY
+        sync: false
+      - key: VIRTUALS_BASE_URL
+        value: https://compute.virtuals.io/v1
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      # Only needed when PAPER_MODE=false (live trading).
+      - key: WALLET_ADDRESS
+        sync: false
+      - key: PRIVATE_KEY
+        sync: false
+      - key: BANKROLL
+        value: "50.0"
+
+  # ── Frontend: static dashboard ──────────────────────────────────────────────
+  - type: web
+    name: polymind-ui
+    runtime: static
+    rootDir: dashboard
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      # Absolute API base — set to the polymind-api URL + /api after first deploy,
+      # e.g. https://polymind-api.onrender.com/api
+      - key: VITE_API_BASE
+        sync: false
+      # Must match polymind-api's API_TOKEN (copy it from that service).
+      - key: VITE_API_TOKEN
+        sync: false
+    routes:
+      # SPA fallback: serve index.html for client-side routes.
+      - type: rewrite
+        source: /*
+        destination: /index.html
